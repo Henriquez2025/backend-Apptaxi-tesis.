@@ -7,7 +7,7 @@ import warnings
 from typing import Optional, List
 from datetime import datetime
 import os
-import re # Para ocultar la contraseña en los logs
+import urllib.parse # Para codificar la contraseña correctamente
 
 # --- Importaciones de Admin y SQLAlchemy ---
 from sqladmin import Admin, ModelView
@@ -16,40 +16,39 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (NIVEL EXPERTO + AUTO-FIX)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (BLINDADA)
 # ==========================================
 
-# A. Leer variable de entorno
-DATABASE_URL = os.getenv("DATABASE_URL")
+# A. Credenciales Maestras de Supabase (Hardcoded para evitar errores de config)
+# Estas son las credenciales EXACTAS para el Connection Pooler (IPv4 compatible con Render)
+SUPABASE_USER = "postgres.vjhggvxkhowlnbppuiuw"
+SUPABASE_PASS = "XYZ*147258369*XYZ"
+SUPABASE_HOST = "aws-0-sa-east-1.pooler.supabase.com"
+SUPABASE_PORT = "6543"
+SUPABASE_DB   = "postgres"
 
-# B. Fallback local
-if not DATABASE_URL:
-    print("⚠️  ADVERTENCIA: Usando base de datos LOCAL (No estás en la nube)")
+# B. Codificamos la contraseña (los * pueden dar problemas si no se escapan)
+encoded_pass = urllib.parse.quote_plus(SUPABASE_PASS)
+
+# C. Construimos la URL de Conexión Definitiva
+CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
+
+# D. Lógica de Selección de Entorno
+# Si estamos en Render (existe la variable DATABASE_URL), ignoramos su contenido y usamos nuestra URL Maestra.
+if os.getenv("DATABASE_URL"):
+    print("☁️ ENTORNO NUBE DETECTADO: Usando conexión directa a Supabase Pooler (6543)")
+    DATABASE_URL = CLOUD_DATABASE_URL
+else:
+    print("💻 ENTORNO LOCAL DETECTADO: Usando base de datos local")
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
-# C. Corrección automática de protocolo (Esencial para Render)
-if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+# E. Diagnóstico
+print(f"🚀 CONECTANDO A HOST: {DATABASE_URL.split('@')[-1]}") 
 
-# D. AUTO-CORRECCIÓN DE USUARIO SUPABASE (LA SOLUCIÓN MAESTRA)
-# Si detectamos puerto 6543 (Pooler) pero el usuario es genérico ('postgres'),
-# inyectamos automáticamente el Project ID 'vjhggvxkhowlnbppuiuw'.
-if DATABASE_URL and ":6543" in DATABASE_URL and "postgres:" in DATABASE_URL:
-    print("🔧 AUTO-CORRECCIÓN: Detectado puerto 6543 con usuario incompleto.")
-    print("   -> Inyectando Project ID al usuario para evitar error 'Tenant not found'.")
-    # Reemplazamos 'postgres:' por 'postgres.PROYECTO_ID:'
-    DATABASE_URL = DATABASE_URL.replace("postgres:", "postgres.vjhggvxkhowlnbppuiuw:")
-
-# E. DIAGNÓSTICO FINAL
-if DATABASE_URL:
-    safe_url = re.sub(r':([^@]+)@', ':****@', DATABASE_URL)
-    print(f"🚀 CONECTANDO A: {safe_url}")
-
-# F. Motor de Base de Datos ROBUSTO
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True, 
+    pool_pre_ping=True, # Mantiene viva la conexión
 )
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -173,7 +172,6 @@ app.add_middleware(
 
 admin = Admin(app, engine, title="Taxi Admin")
 
-# Vistas Admin Simplificadas
 class UsuarioAdmin(ModelView, model=Usuario):
     name, name_plural, icon = "Usuario", "Usuarios", "fa-solid fa-users"
     column_list = [Usuario.id, Usuario.nombre, Usuario.email, Usuario.role]
@@ -209,11 +207,12 @@ async def get_db():
 
 @app.get("/")
 def leer_raiz():
-    return {"mensaje": "API Taxi Funcionando (v2.0)."}
+    return {"mensaje": "API Taxi Funcionando (v3.0 - Conexión Blindada)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
+        # Validar password_hash
         query = text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'")
         result = await db.execute(query)
         user = result.fetchone()
@@ -223,23 +222,31 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
             return {"error": "Credenciales inválidas"}
     except Exception as e:
         print(f"Error Login: {e}")
-        return {"error": "Error interno del servidor"}
+        return {"error": "Error interno del servidor (BD)"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     print(f"--> Registrando Pasajero: {datos.nombre}")
     try:
         async with db.begin():
+            # Verificar si existe correo
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar():
                 return {"error": "El correo ya está registrado."}
 
+            # Insertar Usuario
             uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
             
-            # Intentar guardar detalle cliente
+            # Insertar Cliente (OJO: Manejo de errores específico aquí)
             try:
-                await db.execute(text("INSERT INTO clientes (usuario_id, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :p, :c, :t, TO_DATE(:f, 'YYYY-MM-DD'))"), {"u": uid, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": datos.fecha_nacimiento})
+                # Verificamos que la fecha venga bien, si no, NULL
+                f_nac = None
+                if datos.fecha_nacimiento:
+                    f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
+
+                await db.execute(text("INSERT INTO clientes (usuario_id, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :p, :c, :t, :f)"), 
+                {"u": uid, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
             except Exception as e_cli:
-                print(f"Nota: Detalle cliente falló, pero usuario creado. {e_cli}")
+                print(f"Nota: Detalle cliente falló, pero usuario creado. Causa: {e_cli}")
 
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
@@ -256,7 +263,14 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
 
             uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
             vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
-            await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, telefono, fecha_nacimiento) VALUES (:u, :v, :t, TO_DATE(:f, 'YYYY-MM-DD'))"), {"u": uid, "v": vid, "t": datos.telefono, "f": datos.fecha_nacimiento})
+            
+            # Fecha Nacimiento
+            f_nac = None
+            if datos.fecha_nacimiento:
+                 f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
+
+            await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, telefono, fecha_nacimiento) VALUES (:u, :v, :t, :f)"), 
+            {"u": uid, "v": vid, "t": datos.telefono, "f": f_nac})
             
         return {"mensaje": "Conductor registrado exitosamente", "id": uid}
     except Exception as e:
