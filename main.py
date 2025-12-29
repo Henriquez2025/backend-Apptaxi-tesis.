@@ -16,33 +16,30 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE POOLER FIX)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (CORREGIDA AWS-1)
 # ==========================================
 
-# A. TUS CREDENCIALES (Verifica que el PROJECT_ID sea el correcto de tu URL de Supabase)
-# Tu URL original era: db.vjhggvxkhowlnbppuiuw.supabase.co
+# A. TUS CREDENCIALES EXACTAS
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
 
-# B. Construcción de la URL para el POOLER (Puerto 6543)
-# Usamos el dominio directo del proyecto que suele enrutar mejor el tenant
+# B. Construcción URL Pooler (CORREGIDO: aws-1)
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
-SUPABASE_HOST = "aws-0-sa-east-1.pooler.supabase.com" # Host del pooler para tu región
-SUPABASE_PORT = "6543"
+# ¡AQUÍ ESTABA EL ERROR! Usamos aws-1
+SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
+SUPABASE_PORT = "6543" # Usamos 6543 siempre para Pooler en IPv4
 SUPABASE_DB   = "postgres"
 
-# C. Codificar contraseña y construir URL con parámetro vital para Pooler
+# C. Codificar contraseña y URL
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-
-# ¡OJO AQUÍ! Agregamos ?prepared_statement_cache_size=0 para que funcione con PgBouncer
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
 # D. Selección de Entorno
 if os.getenv("DATABASE_URL"):
-    print(f"☁️ MODO NUBE: Conectando como usuario '{SUPABASE_USER}' al puerto {SUPABASE_PORT}...")
+    print(f"☁️ CONECTANDO A NUBE (CORRECTO): {SUPABASE_HOST}")
     DATABASE_URL = CLOUD_DATABASE_URL
 else:
-    print("💻 MODO LOCAL: Usando base de datos local")
+    print("💻 MODO LOCAL")
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
 engine = create_async_engine(
@@ -207,7 +204,7 @@ async def get_db():
 
 @app.get("/")
 def leer_raiz():
-    return {"mensaje": "API Taxi Funcionando (v3.1 - Fix Pooler)."}
+    return {"mensaje": "API Taxi Funcionando (v3.2 - Fix AWS-1)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -234,7 +231,6 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
             uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
             
             try:
-                # Corregimos fecha si viene vacía
                 f_nac = None
                 if datos.fecha_nacimiento:
                     f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
@@ -247,9 +243,6 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
         print(f"Error CRITICO registrando usuario: {e}")
-        # Detectar error de Tenant y dar pista
-        if "Tenant or user not found" in str(e):
-             print(f"🚨 Verifica que el PROJECT_ID '{PROJECT_ID}' sea correcto en Supabase.")
         return {"error": f"Error al registrar: {str(e)}"}
 
 @app.post("/registrar_conductor")
