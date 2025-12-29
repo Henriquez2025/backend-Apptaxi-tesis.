@@ -19,7 +19,15 @@ from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 # ==========================================
 
 # cadena de conexión 
-SUPABASE_URL = "postgresql://postgres:XYZ*147258369*XYZ@db.vjhggvxkhowlnbppuiuw.supabase.co:5432/postgres"
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    SUPABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
+if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+engine = create_async_engine(DATABASE_URL)
+async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+Base = declarative_base()
 
 # 2. AJUSTE TÉCNICO:
 # SQLAlchemy asíncrono necesita que la URL empiece con "postgresql+asyncpg://"
