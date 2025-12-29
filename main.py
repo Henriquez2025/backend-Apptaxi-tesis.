@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import warnings
 from typing import Optional, List
 from datetime import datetime
-import os # Importante para variables de entorno
+import os # <--- Importante para leer variables de Render
 
 # --- Importaciones de Admin y SQLAlchemy ---
 from sqladmin import Admin, ModelView
@@ -15,27 +15,21 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (INTELIGENTE)
 # ==========================================
 
-# cadena de conexión 
+# A. Intentamos leer la Variable de Entorno de Render (Nube)
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# B. Si está vacía (significa que estamos en tu PC), usamos la local
 if not DATABASE_URL:
-    SUPABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
+    # Esta es tu conexión local para cuando trabajas en tu computadora
+    DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
+
+# C. Corrección automática para Supabase (postgresql:// -> postgresql+asyncpg://)
+# Esto arregla el error de conexión en la nube
 if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-engine = create_async_engine(DATABASE_URL)
-async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-Base = declarative_base()
-
-# 2. AJUSTE TÉCNICO:
-# SQLAlchemy asíncrono necesita que la URL empiece con "postgresql+asyncpg://"
-# Supabase da "postgresql://", así que lo corregimos automáticamente aquí:
-if SUPABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = SUPABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-else:
-    DATABASE_URL = SUPABASE_URL
 
 engine = create_async_engine(DATABASE_URL)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
