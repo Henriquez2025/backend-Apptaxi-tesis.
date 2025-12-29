@@ -7,7 +7,7 @@ import warnings
 from typing import Optional, List
 from datetime import datetime
 import os
-import urllib.parse # Para codificar la contraseña correctamente
+import urllib.parse 
 
 # --- Importaciones de Admin y SQLAlchemy ---
 from sqladmin import Admin, ModelView
@@ -16,39 +16,39 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (BLINDADA)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE POOLER FIX)
 # ==========================================
 
-# A. Credenciales Maestras de Supabase (Hardcoded para evitar errores de config)
-# Estas son las credenciales EXACTAS para el Connection Pooler (IPv4 compatible con Render)
-SUPABASE_USER = "postgres.vjhggvxkhowlnbppuiuw"
-SUPABASE_PASS = "XYZ*147258369*XYZ"
-SUPABASE_HOST = "aws-0-sa-east-1.pooler.supabase.com"
+# A. TUS CREDENCIALES (Verifica que el PROJECT_ID sea el correcto de tu URL de Supabase)
+# Tu URL original era: db.vjhggvxkhowlnbppuiuw.supabase.co
+PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
+DB_PASSWORD = "XYZ*147258369*XYZ"
+
+# B. Construcción de la URL para el POOLER (Puerto 6543)
+# Usamos el dominio directo del proyecto que suele enrutar mejor el tenant
+SUPABASE_USER = f"postgres.{PROJECT_ID}"
+SUPABASE_HOST = "aws-0-sa-east-1.pooler.supabase.com" # Host del pooler para tu región
 SUPABASE_PORT = "6543"
 SUPABASE_DB   = "postgres"
 
-# B. Codificamos la contraseña (los * pueden dar problemas si no se escapan)
-encoded_pass = urllib.parse.quote_plus(SUPABASE_PASS)
+# C. Codificar contraseña y construir URL con parámetro vital para Pooler
+encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
 
-# C. Construimos la URL de Conexión Definitiva
-CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
+# ¡OJO AQUÍ! Agregamos ?prepared_statement_cache_size=0 para que funcione con PgBouncer
+CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
-# D. Lógica de Selección de Entorno
-# Si estamos en Render (existe la variable DATABASE_URL), ignoramos su contenido y usamos nuestra URL Maestra.
+# D. Selección de Entorno
 if os.getenv("DATABASE_URL"):
-    print("☁️ ENTORNO NUBE DETECTADO: Usando conexión directa a Supabase Pooler (6543)")
+    print(f"☁️ MODO NUBE: Conectando como usuario '{SUPABASE_USER}' al puerto {SUPABASE_PORT}...")
     DATABASE_URL = CLOUD_DATABASE_URL
 else:
-    print("💻 ENTORNO LOCAL DETECTADO: Usando base de datos local")
+    print("💻 MODO LOCAL: Usando base de datos local")
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
-
-# E. Diagnóstico
-print(f"🚀 CONECTANDO A HOST: {DATABASE_URL.split('@')[-1]}") 
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True, # Mantiene viva la conexión
+    pool_pre_ping=True, 
 )
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -207,12 +207,11 @@ async def get_db():
 
 @app.get("/")
 def leer_raiz():
-    return {"mensaje": "API Taxi Funcionando (v3.0 - Conexión Blindada)."}
+    return {"mensaje": "API Taxi Funcionando (v3.1 - Fix Pooler)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Validar password_hash
         query = text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'")
         result = await db.execute(query)
         user = result.fetchone()
@@ -229,16 +228,13 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
     print(f"--> Registrando Pasajero: {datos.nombre}")
     try:
         async with db.begin():
-            # Verificar si existe correo
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar():
                 return {"error": "El correo ya está registrado."}
 
-            # Insertar Usuario
             uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
             
-            # Insertar Cliente (OJO: Manejo de errores específico aquí)
             try:
-                # Verificamos que la fecha venga bien, si no, NULL
+                # Corregimos fecha si viene vacía
                 f_nac = None
                 if datos.fecha_nacimiento:
                     f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
@@ -251,6 +247,9 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
         print(f"Error CRITICO registrando usuario: {e}")
+        # Detectar error de Tenant y dar pista
+        if "Tenant or user not found" in str(e):
+             print(f"🚨 Verifica que el PROJECT_ID '{PROJECT_ID}' sea correcto en Supabase.")
         return {"error": f"Error al registrar: {str(e)}"}
 
 @app.post("/registrar_conductor")
@@ -264,7 +263,6 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
             uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
             vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
             
-            # Fecha Nacimiento
             f_nac = None
             if datos.fecha_nacimiento:
                  f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
