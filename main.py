@@ -16,35 +16,36 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (NIVEL EXPERTO)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (NIVEL EXPERTO + AUTO-FIX)
 # ==========================================
 
 # A. Leer variable de entorno
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# B. Fallback local (Solo si no existe la variable, ej: en tu PC)
+# B. Fallback local
 if not DATABASE_URL:
     print("⚠️  ADVERTENCIA: Usando base de datos LOCAL (No estás en la nube)")
-    # OJO: Aquí usa tu conexión local
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
 # C. Corrección automática de protocolo (Esencial para Render)
 if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# D. DIAGNÓSTICO DE SEGURIDAD (Muestra qué estamos usando sin revelar la clave)
-if DATABASE_URL:
-    # Ocultamos la contraseña en los logs para seguridad
-    safe_url = re.sub(r':([^@]+)@', ':****@', DATABASE_URL)
-    print(f"🚀 INICIANDO MOTOR DB CON: {safe_url}")
-    
-    # Verificamos si el usuario tiene el formato correcto para el Pooler (6543)
-    if "6543" in DATABASE_URL and "postgres." not in DATABASE_URL.split("@")[0]:
-        print("🚨 ALERTA POSIBLE: Estás usando el puerto 6543 pero el usuario parece corto (solo 'postgres').")
-        print("   Para el Pooler, el usuario suele ser 'postgres.project_id'. Revisa tu variable en Render.")
+# D. AUTO-CORRECCIÓN DE USUARIO SUPABASE (LA SOLUCIÓN MAESTRA)
+# Si detectamos puerto 6543 (Pooler) pero el usuario es genérico ('postgres'),
+# inyectamos automáticamente el Project ID 'vjhggvxkhowlnbppuiuw'.
+if DATABASE_URL and ":6543" in DATABASE_URL and "postgres:" in DATABASE_URL:
+    print("🔧 AUTO-CORRECCIÓN: Detectado puerto 6543 con usuario incompleto.")
+    print("   -> Inyectando Project ID al usuario para evitar error 'Tenant not found'.")
+    # Reemplazamos 'postgres:' por 'postgres.PROYECTO_ID:'
+    DATABASE_URL = DATABASE_URL.replace("postgres:", "postgres.vjhggvxkhowlnbppuiuw:")
 
-# E. Motor de Base de Datos ROBUSTO
-# pool_pre_ping=True: Verifica que la conexión esté viva antes de usarla (Evita errores de desconexión)
+# E. DIAGNÓSTICO FINAL
+if DATABASE_URL:
+    safe_url = re.sub(r':([^@]+)@', ':****@', DATABASE_URL)
+    print(f"🚀 CONECTANDO A: {safe_url}")
+
+# F. Motor de Base de Datos ROBUSTO
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
@@ -242,12 +243,6 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
 
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
-        # Aquí capturamos el error "Tenant or user not found" y damos un mensaje claro
-        err_msg = str(e)
-        if "Tenant or user not found" in err_msg:
-            print("❌ ERROR DE CONFIGURACIÓN RENDER: El usuario de la BD es incorrecto.")
-            return {"error": "Error de servidor: Configuración de base de datos incorrecta (Usuario)."}
-        
         print(f"Error CRITICO registrando usuario: {e}")
         return {"error": f"Error al registrar: {str(e)}"}
 
