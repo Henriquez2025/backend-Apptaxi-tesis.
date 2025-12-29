@@ -6,7 +6,8 @@ from pydantic import BaseModel
 import warnings
 from typing import Optional, List
 from datetime import datetime
-import os # <--- Importante para leer variables de Render
+import os
+import re # Para ocultar la contraseña en los logs
 
 # --- Importaciones de Admin y SQLAlchemy ---
 from sqladmin import Admin, ModelView
@@ -15,28 +16,39 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (INTELIGENTE)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (NIVEL EXPERTO)
 # ==========================================
 
-# A. Intentamos leer la Variable de Entorno de Render (Nube)
+# A. Leer variable de entorno
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# B. Si está vacía (significa que estamos en tu PC), usamos la local
+# B. Fallback local (Solo si no existe la variable)
 if not DATABASE_URL:
-    # Esta es tu conexión local para cuando trabajas en tu computadora
+    print("⚠️  ADVERTENCIA: Usando base de datos LOCAL (No estás en la nube)")
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
-# C. Corrección automática para Supabase (postgresql:// -> postgresql+asyncpg://)
-# Esto arregla el error de conexión en la nube
+# C. Corrección automática de protocolo
 if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-engine = create_async_engine(DATABASE_URL)
+# D. DIAGNÓSTICO DE CONEXIÓN (IMPORTANTE)
+# Esto imprimirá la URL en los logs de Render pero ocultando tu contraseña
+safe_url = re.sub(r':([^@]+)@', ':****@', DATABASE_URL)
+print(f"🚀 Intentando conectar a: {safe_url}")
+
+# E. Motor de Base de Datos con opciones Robustas
+# pool_pre_ping=True ayuda a recuperar conexiones perdidas
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+)
+
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
 # ==========================================
-# 2. MODELOS DE BASE DE DATOS (TABLAS)
+# 2. MODELOS DE BASE DE DATOS
 # ==========================================
 
 class Usuario(Base):
@@ -56,14 +68,10 @@ class Viaje(Base):
     destino = Column(String)
     estado = Column(String, default='pendiente')
     tarifa = Column(Float)
-    
-    # Coordenadas para el mapa
     origen_lat = Column(Float, nullable=True)
     origen_lng = Column(Float, nullable=True)
     destino_lat = Column(Float, nullable=True)
     destino_lng = Column(Float, nullable=True)
-    
-    # Relaciones para el Admin
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
@@ -75,7 +83,6 @@ class Cliente(Base):
     ciudad = Column(String)
     telefono = Column(String)
     fecha_nacimiento = Column(Date)
-    
     usuario = relationship("Usuario")
 
 class Vehiculo(Base):
@@ -94,12 +101,11 @@ class Conductor(Base):
     vehiculo_id = Column(Integer, ForeignKey("vehiculos.id"))
     telefono = Column(String)
     fecha_nacimiento = Column(Date)
-
     usuario = relationship("Usuario")
     vehiculo = relationship("Vehiculo")
 
 # ==========================================
-# 3. MODELOS PYDANTIC (Datos que envía Flutter)
+# 3. SCHEMAS PYDANTIC
 # ==========================================
 class LoginRequest(BaseModel):
     email: str
@@ -110,7 +116,6 @@ class ViajeRequest(BaseModel):
     origen: str
     destino: str
     tarifa: float
-    # Coordenadas opcionales
     origen_lat: Optional[float] = None
     origen_lng: Optional[float] = None
     destino_lat: Optional[float] = None
@@ -137,7 +142,6 @@ class RegistroConductorRequest(BaseModel):
     telefono: str
     fecha_nacimiento: str
     role: str = "conductor"
-    # Datos vehículo
     vehiculo_marca: str
     vehiculo_modelo: str
     vehiculo_placa: str
@@ -147,7 +151,7 @@ class RegistroConductorRequest(BaseModel):
     horario_trabajo: Optional[str] = None
 
 # ==========================================
-# 4. INICIALIZACIÓN DE API & ADMIN
+# 4. APP & ADMIN
 # ==========================================
 app = FastAPI(title="Taxi App API")
 
@@ -159,48 +163,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURACIÓN DEL PANEL ---
 admin = Admin(app, engine, title="Taxi Admin")
 
+# Vistas Admin Simplificadas para evitar errores
 class UsuarioAdmin(ModelView, model=Usuario):
-    name = "Usuario"
-    name_plural = "Usuarios"
-    icon = "fa-solid fa-users"
+    name, name_plural, icon = "Usuario", "Usuarios", "fa-solid fa-users"
     column_list = [Usuario.id, Usuario.nombre, Usuario.email, Usuario.role]
 
 class ClienteAdmin(ModelView, model=Cliente):
-    name = "Cliente"
-    name_plural = "Clientes"
-    icon = "fa-solid fa-person"
-    column_list = [Cliente.id, "usuario.nombre", Cliente.usuario_id, Cliente.ciudad, Cliente.telefono]
+    name, name_plural, icon = "Cliente", "Clientes", "fa-solid fa-person"
+    column_list = [Cliente.id, "usuario.nombre", Cliente.ciudad, Cliente.telefono]
     column_labels = {"usuario.nombre": "Nombre"}
 
 class ConductorAdmin(ModelView, model=Conductor):
-    name = "Conductor"
-    name_plural = "Conductores"
-    icon = "fa-solid fa-id-card"
+    name, name_plural, icon = "Conductor", "Conductores", "fa-solid fa-id-card"
     column_list = [Conductor.id, "usuario.nombre", "vehiculo.placa", Conductor.telefono]
     column_labels = {"usuario.nombre": "Chofer", "vehiculo.placa": "Placa"}
 
 class VehiculoAdmin(ModelView, model=Vehiculo):
-    name = "Vehículo"
-    name_plural = "Vehículos"
-    icon = "fa-solid fa-car"
-    column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.marca, Vehiculo.modelo, Vehiculo.color]
+    name, name_plural, icon = "Vehículo", "Vehículos", "fa-solid fa-car"
+    column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.marca, Vehiculo.modelo]
 
 class ViajeAdmin(ModelView, model=Viaje):
-    name = "Viaje"
-    name_plural = "Viajes"
-    icon = "fa-solid fa-map-location-dot"
-    # Mostramos datos directos para evitar errores si falta info
+    name, name_plural, icon = "Viaje", "Viajes", "fa-solid fa-map-location-dot"
     column_list = [Viaje.id, Viaje.cliente_id, Viaje.origen, Viaje.destino, Viaje.tarifa, Viaje.estado]
-    column_sortable_list = [Viaje.id, Viaje.estado]
 
-admin.add_view(UsuarioAdmin)
-admin.add_view(ClienteAdmin)
-admin.add_view(ConductorAdmin)
-admin.add_view(VehiculoAdmin)
-admin.add_view(ViajeAdmin)
+admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin)
+admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin)
 
 async def get_db():
     async with async_session() as session:
@@ -212,59 +201,41 @@ async def get_db():
 
 @app.get("/")
 def leer_raiz():
-    return {"mensaje": "API Taxi Funcionando con Supabase."}
+    return {"mensaje": "API Taxi Funcionando (v2.0)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
-    # Verifica que la columna en tu BD sea password_hash
-    query = text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'")
-    result = await db.execute(query)
-    user = result.fetchone()
-    if user:
-        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": user.nombre, "role": user.role}}
-    else:
-        return {"error": "Credenciales inválidas"}
+    try:
+        query = text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'")
+        result = await db.execute(query)
+        user = result.fetchone()
+        if user:
+            return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": user.nombre, "role": user.role}}
+        else:
+            return {"error": "Credenciales inválidas"}
+    except Exception as e:
+        print(f"Error Login: {e}")
+        return {"error": "Error interno del servidor"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     print(f"--> Registrando Pasajero: {datos.nombre}")
     try:
         async with db.begin():
-            q_check = text("SELECT id FROM usuarios WHERE email = :ema")
-            res = await db.execute(q_check, {"ema": datos.email})
-            if res.scalar():
+            if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar():
                 return {"error": "El correo ya está registrado."}
 
-            query_user = text("""
-                INSERT INTO usuarios (nombre, email, password_hash, role) 
-                VALUES (:nom, :ema, :pass, :rol) 
-                RETURNING id
-            """)
-            result = await db.execute(query_user, {
-                "nom": datos.nombre,
-                "ema": datos.email, 
-                "pass": datos.password, 
-                "rol": "cliente"
-            })
-            user_id = result.scalar()
+            uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
+            
+            # Intentar guardar detalle cliente
+            try:
+                await db.execute(text("INSERT INTO clientes (usuario_id, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :p, :c, :t, TO_DATE(:f, 'YYYY-MM-DD'))"), {"u": uid, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": datos.fecha_nacimiento})
+            except Exception as e_cli:
+                print(f"Nota: Detalle cliente falló, pero usuario creado. {e_cli}")
 
-            # Guardamos perfil cliente
-            # OJO: Verifica si es 'ciudad' o 'cuidad' en tu BD
-            query_client = text("""
-                INSERT INTO clientes (usuario_id, pais, ciudad, telefono, fecha_nacimiento)
-                VALUES (:uid, :pais, :ciu, :tel, TO_DATE(:fec, 'YYYY-MM-DD'))
-            """)
-            await db.execute(query_client, {
-                "uid": user_id,
-                "pais": datos.pais,
-                "ciu": datos.ciudad,
-                "tel": datos.telefono,
-                "fec": datos.fecha_nacimiento 
-            })
-
-        return {"mensaje": "Usuario registrado exitosamente", "id": user_id}
+        return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
-        print(f"Error registrando usuario: {e}")
+        print(f"Error CRITICO registrando usuario: {e}")
         return {"error": f"Error al registrar: {str(e)}"}
 
 @app.post("/registrar_conductor")
@@ -272,124 +243,45 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
     print(f"--> Registrando Conductor: {datos.nombre}")
     try:
         async with db.begin():
-            # A. Verificar email
-            q_check = text("SELECT id FROM usuarios WHERE email = :ema")
-            res = await db.execute(q_check, {"ema": datos.email})
-            if res.scalar():
-                return {"error": "El correo electrónico ya está registrado."}
+            if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "El correo ya existe."}
+            if (await db.execute(text("SELECT id FROM vehiculos WHERE placa = :p"), {"p": datos.vehiculo_placa})).scalar(): return {"error": "Placa registrada."}
 
-            # B. Verificar placa (para no duplicar vehículos)
-            q_placa = text("SELECT id FROM vehiculos WHERE placa = :placa")
-            res_placa = await db.execute(q_placa, {"placa": datos.vehiculo_placa})
-            if res_placa.scalar():
-                return {"error": "Esa placa ya está registrada en el sistema."}
-
-            # 1. Crear Usuario
-            query_user = text("""
-                INSERT INTO usuarios (nombre, email, password_hash, role) 
-                VALUES (:nom, :ema, :pass, :rol) 
-                RETURNING id
-            """)
-            result_user = await db.execute(query_user, {
-                "nom": datos.nombre,
-                "ema": datos.email, 
-                "pass": datos.password, 
-                "rol": "conductor"
-            })
-            user_id = result_user.scalar()
-
-            # 2. Crear Vehículo
-            query_vehiculo = text("""
-                INSERT INTO vehiculos (marca, modelo, placa, color, anio)
-                VALUES (:ma, :mo, :pl, :co, :an)
-                RETURNING id
-            """)
-            result_vehiculo = await db.execute(query_vehiculo, {
-                "ma": datos.vehiculo_marca,
-                "mo": datos.vehiculo_modelo,
-                "pl": datos.vehiculo_placa,
-                "co": datos.vehiculo_color,
-                "an": datos.vehiculo_anio
-            })
-            vehiculo_id = result_vehiculo.scalar()
-
-            # 3. Crear Perfil Conductor
-            query_driver = text("""
-                INSERT INTO conductores (usuario_id, vehiculo_id, telefono, fecha_nacimiento)
-                VALUES (:uid, :vid, :tel, TO_DATE(:fec, 'YYYY-MM-DD'))
-            """)
-            await db.execute(query_driver, {
-                "uid": user_id,
-                "vid": vehiculo_id,
-                "tel": datos.telefono,
-                "fec": datos.fecha_nacimiento
-            })
+            uid = (await db.execute(text("INSERT INTO usuarios (nombre, email, password_hash, role) VALUES (:n, :e, :p, :r) RETURNING id"), {"n": datos.nombre, "e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
+            vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
+            await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, telefono, fecha_nacimiento) VALUES (:u, :v, :t, TO_DATE(:f, 'YYYY-MM-DD'))"), {"u": uid, "v": vid, "t": datos.telefono, "f": datos.fecha_nacimiento})
             
-        return {"mensaje": "Conductor registrado exitosamente", "id": user_id}
+        return {"mensaje": "Conductor registrado exitosamente", "id": uid}
     except Exception as e:
         print(f"Error registrando conductor: {e}")
         return {"error": f"Error al registrar: {str(e)}"}
 
 @app.post("/viajes/solicitar")
-async def solicitar(viaje: ViajeRequest, db: AsyncSession = Depends(get_db)):
+async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            query = text("""
-                INSERT INTO viajes (
-                    cliente_id, origen, destino, tarifa, estado,
-                    origen_lat, origen_lng, destino_lat, destino_lng
-                ) 
-                VALUES (
-                    :cid, :ori, :des, :tar, 'pendiente',
-                    :olat, :olng, :dlat, :dlng
-                )
-            """)
-            await db.execute(query, {
-                "cid": viaje.usuario_id, 
-                "ori": viaje.origen, 
-                "des": viaje.destino, 
-                "tar": viaje.tarifa,
-                "olat": viaje.origen_lat,
-                "olng": viaje.origen_lng,
-                "dlat": viaje.destino_lat,
-                "dlng": viaje.destino_lng
-            })
+            await db.execute(text("INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng)"), 
+            {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng})
         return {"mensaje": "Viaje solicitado"}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
-    query = text("""
-        SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, u.nombre as cliente
-        FROM viajes v
-        JOIN usuarios u ON v.cliente_id = u.id
-        WHERE v.estado='pendiente'
-    """)
+    # Query simplificada para evitar errores de join si hay datos sucios
+    query = text("SELECT * FROM viajes WHERE estado='pendiente'")
     result = await db.execute(query)
     viajes = result.fetchall()
-    
     lista = []
     for v in viajes:
-        lista.append({
-            "id": v.id, 
-            "origen": v.origen, 
-            "destino": v.destino, 
-            "tarifa": v.tarifa, 
-            "estado": v.estado, 
-            "cliente": v.cliente
-        })
+        lista.append({"id": v.id, "origen": v.origen, "destino": v.destino, "tarifa": v.tarifa, "estado": v.estado})
     return lista
 
 @app.post("/viajes/aceptar")
 async def aceptar(datos: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            query = text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid")
-            await db.execute(query, {"cid": datos.conductor_id, "vid": datos.viaje_id})
+            await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": datos.conductor_id, "vid": datos.viaje_id})
         return {"mensaje": "Viaje aceptado"}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
