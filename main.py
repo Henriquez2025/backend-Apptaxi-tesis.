@@ -13,33 +13,31 @@ import urllib.parse
 from sqladmin import Admin, ModelView
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime
+from sqlalchemy.sql import func
 
 # ==========================================
-# 1. CONFIGURACIÓN DE BASE DE DATOS (CORREGIDA AWS-1)
+# 1. CONFIGURACIÓN DE BASE DE DATOS (BLINDADA SUPABASE)
 # ==========================================
 
-# A. TUS CREDENCIALES EXACTAS
+# Credenciales Maestras
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
-
-# B. Construcción URL Pooler (CORREGIDO: aws-1)
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
-# ¡AQUÍ ESTABA EL ERROR! Usamos aws-1
 SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
-SUPABASE_PORT = "6543" # Usamos 6543 siempre para Pooler en IPv4
+SUPABASE_PORT = "6543"
 SUPABASE_DB   = "postgres"
 
-# C. Codificar contraseña y URL
+# Codificar contraseña y construir URL con parámetro para Pooler
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
-# D. Selección de Entorno
+# Selección de Entorno
 if os.getenv("DATABASE_URL"):
-    print(f"☁️ CONECTANDO A NUBE (CORRECTO): {SUPABASE_HOST}")
+    print(f"☁️ MODO NUBE: Conectando a {SUPABASE_HOST}...")
     DATABASE_URL = CLOUD_DATABASE_URL
 else:
-    print("💻 MODO LOCAL")
+    print("💻 MODO LOCAL: Usando base de datos local")
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
 engine = create_async_engine(
@@ -62,6 +60,16 @@ class Usuario(Base):
     email = Column(String, unique=True)
     password_hash = Column(String) 
     role = Column(String) 
+
+class ContactoEmergencia(Base):
+    __tablename__ = "contactos_emergencia"
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    nombre_contacto = Column(String)
+    numero_whatsapp = Column(String)
+    fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
+    
+    usuario = relationship("Usuario")
 
 class Viaje(Base):
     __tablename__ = "viajes"
@@ -154,6 +162,11 @@ class RegistroConductorRequest(BaseModel):
     cedula: Optional[str] = None
     horario_trabajo: Optional[str] = None
 
+class ContactoRequest(BaseModel):
+    usuario_id: int
+    nombre_contacto: str
+    numero_whatsapp: str
+
 # ==========================================
 # 4. APP & ADMIN
 # ==========================================
@@ -191,8 +204,12 @@ class ViajeAdmin(ModelView, model=Viaje):
     name, name_plural, icon = "Viaje", "Viajes", "fa-solid fa-map-location-dot"
     column_list = [Viaje.id, Viaje.cliente_id, Viaje.origen, Viaje.destino, Viaje.tarifa, Viaje.estado]
 
+class ContactoAdmin(ModelView, model=ContactoEmergencia):
+    name, name_plural, icon = "Contacto SOS", "Contactos SOS", "fa-solid fa-shield-heart"
+    column_list = [ContactoEmergencia.id, ContactoEmergencia.usuario_id, ContactoEmergencia.nombre_contacto, ContactoEmergencia.numero_whatsapp]
+
 admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin)
-admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin)
+admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(ContactoAdmin)
 
 async def get_db():
     async with async_session() as session:
@@ -204,7 +221,7 @@ async def get_db():
 
 @app.get("/")
 def leer_raiz():
-    return {"mensaje": "API Taxi Funcionando (v3.2 - Fix AWS-1)."}
+    return {"mensaje": "API Taxi Funcionando (v4.0 - Seguridad)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -238,7 +255,7 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                 await db.execute(text("INSERT INTO clientes (usuario_id, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :p, :c, :t, :f)"), 
                 {"u": uid, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
             except Exception as e_cli:
-                print(f"Nota: Detalle cliente falló, pero usuario creado. Causa: {e_cli}")
+                print(f"Nota: Detalle cliente falló: {e_cli}")
 
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
@@ -294,6 +311,31 @@ async def aceptar(datos: AceptarViajeRequest, db: AsyncSession = Depends(get_db)
             await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": datos.conductor_id, "vid": datos.viaje_id})
         return {"mensaje": "Viaje aceptado"}
     except Exception as e: return {"error": str(e)}
+
+# --- GESTIÓN DE CONTACTOS DE EMERGENCIA ---
+@app.post("/contactos/agregar")
+async def agregar_contacto(dato: ContactoRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        async with db.begin():
+            query = text("INSERT INTO contactos_emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)")
+            await db.execute(query, {"uid": dato.usuario_id, "nom": dato.nombre_contacto, "num": dato.numero_whatsapp})
+        return {"mensaje": "Contacto guardado"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/contactos/listar/{usuario_id}")
+async def listar_contactos(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("SELECT nombre_contacto, numero_whatsapp FROM contactos_emergencia WHERE usuario_id = :uid")
+        result = await db.execute(query, {"uid": usuario_id})
+        contactos = result.fetchall()
+        
+        lista = []
+        for c in contactos:
+            lista.append({"nombre": c.nombre_contacto, "numero": c.numero_whatsapp})
+        return lista
+    except Exception as e:
+        return []
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
