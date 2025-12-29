@@ -22,26 +22,33 @@ from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date
 # A. Leer variable de entorno
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# B. Fallback local (Solo si no existe la variable)
+# B. Fallback local (Solo si no existe la variable, ej: en tu PC)
 if not DATABASE_URL:
     print("⚠️  ADVERTENCIA: Usando base de datos LOCAL (No estás en la nube)")
+    # OJO: Aquí usa tu conexión local
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
-# C. Corrección automática de protocolo
+# C. Corrección automática de protocolo (Esencial para Render)
 if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# D. DIAGNÓSTICO DE CONEXIÓN (IMPORTANTE)
-# Esto imprimirá la URL en los logs de Render pero ocultando tu contraseña
-safe_url = re.sub(r':([^@]+)@', ':****@', DATABASE_URL)
-print(f"🚀 Intentando conectar a: {safe_url}")
+# D. DIAGNÓSTICO DE SEGURIDAD (Muestra qué estamos usando sin revelar la clave)
+if DATABASE_URL:
+    # Ocultamos la contraseña en los logs para seguridad
+    safe_url = re.sub(r':([^@]+)@', ':****@', DATABASE_URL)
+    print(f"🚀 INICIANDO MOTOR DB CON: {safe_url}")
+    
+    # Verificamos si el usuario tiene el formato correcto para el Pooler (6543)
+    if "6543" in DATABASE_URL and "postgres." not in DATABASE_URL.split("@")[0]:
+        print("🚨 ALERTA POSIBLE: Estás usando el puerto 6543 pero el usuario parece corto (solo 'postgres').")
+        print("   Para el Pooler, el usuario suele ser 'postgres.project_id'. Revisa tu variable en Render.")
 
-# E. Motor de Base de Datos con opciones Robustas
-# pool_pre_ping=True ayuda a recuperar conexiones perdidas
+# E. Motor de Base de Datos ROBUSTO
+# pool_pre_ping=True: Verifica que la conexión esté viva antes de usarla (Evita errores de desconexión)
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,
+    pool_pre_ping=True, 
 )
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -165,7 +172,7 @@ app.add_middleware(
 
 admin = Admin(app, engine, title="Taxi Admin")
 
-# Vistas Admin Simplificadas para evitar errores
+# Vistas Admin Simplificadas
 class UsuarioAdmin(ModelView, model=Usuario):
     name, name_plural, icon = "Usuario", "Usuarios", "fa-solid fa-users"
     column_list = [Usuario.id, Usuario.nombre, Usuario.email, Usuario.role]
@@ -235,6 +242,12 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
 
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
     except Exception as e:
+        # Aquí capturamos el error "Tenant or user not found" y damos un mensaje claro
+        err_msg = str(e)
+        if "Tenant or user not found" in err_msg:
+            print("❌ ERROR DE CONFIGURACIÓN RENDER: El usuario de la BD es incorrecto.")
+            return {"error": "Error de servidor: Configuración de base de datos incorrecta (Usuario)."}
+        
         print(f"Error CRITICO registrando usuario: {e}")
         return {"error": f"Error al registrar: {str(e)}"}
 
@@ -266,7 +279,6 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
-    # Query simplificada para evitar errores de join si hay datos sucios
     query = text("SELECT * FROM viajes WHERE estado='pendiente'")
     result = await db.execute(query)
     viajes = result.fetchall()
