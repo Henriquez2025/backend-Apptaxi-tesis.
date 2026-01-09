@@ -11,3 +11,4 @@ python-multipart
 itsdangerous
 jinja2
 httpx
+GeoAlchemy2
