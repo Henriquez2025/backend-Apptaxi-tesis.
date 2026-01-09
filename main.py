@@ -16,7 +16,11 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime
 from sqlalchemy.sql import func
 
-# 1. CONFIGURACIÓN DE BASE DE DATOS (BLINDADA SUPABASE)
+# IMPORTANTE: Librería para PostGIS
+# instalar: pip install GeoAlchemy2
+from geoalchemy2 import Geometry 
+
+# 1. CONFIGURACIÓN DE BASE DE DATOS  SUPABASE
 
 # LAS CREDENCIALES EXACTAS
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
@@ -49,7 +53,7 @@ engine = create_async_engine(
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-# MODELOS DE BASE DE DATOS (NUEVA ESTRUCTURA)
+# MODELOS DE BASE DE DATOS
 
 class Usuario(Base):
     __tablename__ = "usuarios"
@@ -92,6 +96,10 @@ class Conductor(Base):
     nom_apell = Column(String) # Aquí está el nombre completo
     telefono = Column(String)
     fecha_nacimiento = Column(Date)
+    
+    # Ubicación Geográfica (PostGIS)
+    # Usamos Geometry para mapeo con SQLAlchemy, aunque en BD sea Geography
+    ubicacion = Column(Geometry('POINT', srid=4326), nullable=True)
 
     usuario = relationship("Usuario", back_populates="perfil_conductor")
     vehiculo = relationship("Vehiculo")
@@ -140,6 +148,10 @@ class Viaje(Base):
     destino_lat = Column(Float, nullable=True)
     destino_lng = Column(Float, nullable=True)
     
+    # Soporte PostGIS para análisis futuro
+    origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
+    destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
+    
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
@@ -173,6 +185,12 @@ class ContactoEditRequest(BaseModel):
     nombre_contacto: str; numero_whatsapp: str
 class AlertaRequest(BaseModel):
     usuario_id: int; ubicacion: str; mensaje: str
+
+# Schema para actualizar ubicación del conductor
+class UbicacionConductorRequest(BaseModel):
+    usuario_id: int
+    latitud: float
+    longitud: float
 
 # 4. APP & ADMIN
 
@@ -232,7 +250,7 @@ async def get_db():
 
 @app.get("/")
 def leer_raiz():
-    return {"mensaje": "API Taxi Funcionando (v8.0 - nom_apell)."}
+    return {"mensaje": "API Taxi Funcionando (v9.0 - PostGIS Activo)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -298,8 +316,8 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
     print(f"--> Registrando Conductor: {datos.nombre}")
     try:
         async with db.begin():
-            if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "El correo ya existe."}
-            if (await db.execute(text("SELECT id FROM vehiculos WHERE placa = :p"), {"p": datos.vehiculo_placa})).scalar(): return {"error": "Placa registrada."}
+            if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Correo existe."}
+            if (await db.execute(text("SELECT id FROM vehiculos WHERE placa = :p"), {"p": datos.vehiculo_placa})).scalar(): return {"error": "Placa existe."}
 
             # 1. Usuario
             uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
@@ -317,13 +335,29 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
         print(f"Error registrando conductor: {e}")
         return {"error": f"Error al registrar: {str(e)}"}
 
-# --- ENDPOINTS SIN CAMBIOS MAYORES ---
+# --- ENDPOINTS
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            await db.execute(text("INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng)"), 
-            {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng})
+            # Ahora guardamos también la geometría para análisis PostGIS futuro
+            # ST_SetSRID(ST_MakePoint(lng, lat), 4326) crea el punto geográfico
+            query = text("""
+                INSERT INTO viajes (
+                    cliente_id, origen, destino, tarifa, estado, 
+                    origen_lat, origen_lng, destino_lat, destino_lng,
+                    origen_geom, destino_geom
+                ) VALUES (
+                    :cid, :ori, :des, :tar, 'pendiente', 
+                    :olat, :olng, :dlat, :dlng,
+                    ST_SetSRID(ST_MakePoint(:olng, :olat), 4326),
+                    ST_SetSRID(ST_MakePoint(:dlng, :dlat), 4326)
+                )
+            """)
+            await db.execute(query, {
+                "cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, 
+                "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng
+            })
         return {"mensaje": "Viaje solicitado"}
     except Exception as e: return {"error": str(e)}
 
@@ -378,6 +412,61 @@ async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
             await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
         return {"mensaje": "Alerta registrada"}
     except Exception as e: return {"error": str(e)}
+
+# --- NUEVOS ENDPOINTS PARA RASTREO (POSTGIS) ---
+
+@app.post("/conductores/ubicacion")
+async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
+    """El conductor envía su lat/lng y la guardamos como Geometría"""
+    try:
+        async with db.begin():
+            # ST_SetSRID(ST_MakePoint(lng, lat), 4326) crea el punto en formato GPS
+            query = text("""
+                UPDATE conductores 
+                SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)
+                WHERE usuario_id = :uid
+            """)
+            await db.execute(query, {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
+        return {"mensaje": "Ubicación actualizada"}
+    except Exception as e:
+        print(f"Error actualizando ubicación: {e}")
+        return {"error": str(e)}
+
+@app.get("/conductores/cercanos")
+async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
+    """Busca conductores dentro de un radio usando ST_DWithin"""
+    try:
+        # ST_DWithin usa metros para GEOGRAPHY. radio_km * 1000.
+        query = text("""
+            SELECT c.id, c.nom_apell, v.placa, v.modelo,
+                   ST_X(c.ubicacion::geometry) as lng, 
+                   ST_Y(c.ubicacion::geometry) as lat
+            FROM conductores c
+            JOIN vehiculos v ON c.vehiculo_id = v.id
+            WHERE c.ubicacion IS NOT NULL
+            AND ST_DWithin(
+                c.ubicacion, 
+                ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, 
+                :metros
+            )
+        """)
+        res = await db.execute(query, {"lat": lat, "lng": lng, "metros": radio_km * 1000})
+        conductores = res.fetchall()
+        
+        lista = []
+        for c in conductores:
+            lista.append({
+                "id": c.id,
+                "nombre": c.nom_apell,
+                "placa": c.placa,
+                "modelo": c.modelo,
+                "lat": c.lat,
+                "lng": c.lng
+            })
+        return lista
+    except Exception as e:
+        print(f"Error buscando cercanos: {e}")
+        return []
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
