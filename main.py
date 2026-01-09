@@ -1,4 +1,4 @@
-# Importaciones de librerías para la API, manejo de datos y conexión a BD
+# Importaciones de librerías para la API y gestión de datos
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from fastapi import FastAPI, Depends
@@ -9,7 +9,7 @@ from datetime import datetime
 import os
 import urllib.parse 
 
-# Importaciones para el Panel Administrativo y ORM (SQLAlchemy)
+# Importaciones para Panel Administrativo y ORM
 from sqladmin import Admin, ModelView
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -18,9 +18,9 @@ from sqlalchemy.sql import func
 from geoalchemy2 import Geometry 
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN DE LA BASE DE DATOS
+# CONFIGURACIÓN DE CONEXIÓN A BASE DE DATOS
 # -----------------------------------------------------------------------------
-# Definición de credenciales para conexión segura al pooler de Supabase
+
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
@@ -28,50 +28,46 @@ SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com"
 SUPABASE_PORT = "6543"
 SUPABASE_DB   = "postgres"
 
-# Codificación de la contraseña para evitar conflictos con caracteres especiales
+# Codificación de credenciales para cadena de conexión
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-
-# Construcción de la cadena de conexión para SQLAlchemy (AsyncPG)
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
-# Selección dinámica del entorno (Nube vs Local)
+# Selección de entorno de despliegue
 if os.getenv("DATABASE_URL"):
-    print(f"Entorno detectado: NUBE. Conectando a {SUPABASE_HOST}...")
+    # Entorno Producción (Render/Nube)
     DATABASE_URL = CLOUD_DATABASE_URL
 else:
-    print("Entorno detectado: LOCAL. Usando instancia PostgreSQL local.")
+    # Entorno Desarrollo (Local)
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
-# Inicialización del motor asíncrono con verificación de conexión (pre-ping)
+# Inicialización del motor de base de datos
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     pool_pre_ping=True, 
 )
 
-# Configuración de la sesión de base de datos
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
 # -----------------------------------------------------------------------------
-# MODELOS DE DATOS (ORM)
+# DEFINICIÓN DE MODELOS (ORM)
 # -----------------------------------------------------------------------------
 
 class Usuario(Base):
-    """Modelo base para autenticación y roles."""
+    """Entidad principal de autenticación."""
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True)
     password_hash = Column(String) 
     role = Column(String) 
     
-    # Relaciones con perfiles específicos
     perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
     perfil_conductor = relationship("Conductor", back_populates="usuario", uselist=False)
     perfil_admin = relationship("Administrador", back_populates="usuario", uselist=False)
 
 class Cliente(Base):
-    """Perfil detallado para usuarios tipo pasajero."""
+    """Perfil de usuario tipo pasajero."""
     __tablename__ = "clientes"
     id_cliente = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id")) 
@@ -84,7 +80,7 @@ class Cliente(Base):
     usuario = relationship("Usuario", back_populates="perfil_cliente")
 
 class Vehiculo(Base):
-    """Registro de la flota vehicular."""
+    """Registro de unidades vehiculares."""
     __tablename__ = "vehiculos"
     id = Column(Integer, primary_key=True)
     marca = Column(String)
@@ -94,7 +90,7 @@ class Vehiculo(Base):
     anio = Column(String, nullable=True)
 
 class Conductor(Base):
-    """Perfil operativo del conductor, incluyendo estado y ubicación GPS."""
+    """Perfil operativo de conductor asociado a un vehículo."""
     __tablename__ = "conductores"
     id_conductor = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -109,7 +105,7 @@ class Conductor(Base):
     vehiculo = relationship("Vehiculo")
 
 class Administrador(Base): 
-    """Perfil para usuarios con privilegios de gestión."""
+    """Perfil de usuario con privilegios administrativos."""
     __tablename__ = "administradores"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -119,7 +115,7 @@ class Administrador(Base):
     usuario = relationship("Usuario", back_populates="perfil_admin")
 
 class Emergencia(Base):
-    """Agenda de contactos de confianza por usuario."""
+    """Agenda de contactos de confianza."""
     __tablename__ = "emergencia"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -129,7 +125,7 @@ class Emergencia(Base):
     usuario = relationship("Usuario")
 
 class Alerta(Base):
-    """Registro de eventos de pánico (SOS) para auditoría."""
+    """Registro de eventos de seguridad (Botón de Pánico)."""
     __tablename__ = "alertas"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -139,7 +135,7 @@ class Alerta(Base):
     usuario = relationship("Usuario")
 
 class Viaje(Base):
-    """Registro transaccional de solicitudes y estados de viajes."""
+    """Transacciones de servicio de transporte."""
     __tablename__ = "viajes"
     id = Column(Integer, primary_key=True)
     cliente_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -148,14 +144,10 @@ class Viaje(Base):
     destino = Column(String)
     estado = Column(String, default='pendiente')
     tarifa = Column(Float)
-    
-    # Coordenadas geográficas
     origen_lat = Column(Float, nullable=True)
     origen_lng = Column(Float, nullable=True)
     destino_lat = Column(Float, nullable=True)
     destino_lng = Column(Float, nullable=True)
-    
-    # Geometría para análisis espacial
     origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     
@@ -163,7 +155,7 @@ class Viaje(Base):
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
 # -----------------------------------------------------------------------------
-# ESQUEMAS DE VALIDACIÓN (DTOs)
+# ESQUEMAS DE TRANSFERENCIA DE DATOS (DTOs)
 # -----------------------------------------------------------------------------
 class LoginRequest(BaseModel):
     email: str; password: str
@@ -177,14 +169,12 @@ class AceptarViajeRequest(BaseModel):
     viaje_id: int; conductor_id: int
 
 class UsuarioRegistroRequest(BaseModel):
-    nombre: str 
-    email: str; password: str; role: str = "cliente"
+    nombre: str; email: str; password: str; role: str = "cliente"
     telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None 
     pais: Optional[str] = None; ciudad: Optional[str] = None
 
 class RegistroConductorRequest(BaseModel):
-    nombre: str
-    email: str; password: str; telefono: str; fecha_nacimiento: str
+    nombre: str; email: str; password: str; telefono: str; fecha_nacimiento: str
     role: str = "conductor"; vehiculo_marca: str; vehiculo_modelo: str; vehiculo_placa: str
     vehiculo_color: Optional[str] = None; vehiculo_anio: Optional[str] = None; cedula: Optional[str] = None; horario_trabajo: Optional[str] = None
 
@@ -200,14 +190,14 @@ class EstadoConductorRequest(BaseModel):
     usuario_id: int; activo: bool
 
 # -----------------------------------------------------------------------------
-# INICIALIZACIÓN DE LA APLICACIÓN Y PANEL ADMIN
+# INICIALIZACIÓN DE LA API Y PANEL ADMINISTRATIVO
 # -----------------------------------------------------------------------------
-app = FastAPI(title="Taxi App API", description="API REST para gestión de transporte urbano.")
+app = FastAPI(title="Taxi App API", description="API REST para gestión de servicios de transporte.")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Configuración de vistas para SQLAdmin
 admin = Admin(app, engine, title="Taxi Admin")
 
+# Configuración de vistas del panel
 class UsuarioAdmin(ModelView, model=Usuario):
     name, name_plural, icon = "Usuario", "Usuarios", "fa-solid fa-user-lock"
     column_list = [Usuario.id, Usuario.email, Usuario.role]
@@ -243,26 +233,26 @@ class AlertaAdmin(ModelView, model=Alerta):
 admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin); admin.add_view(AdministradorAdmin)
 admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(EmergenciaAdmin); admin.add_view(AlertaAdmin)
 
-# Dependencia para inyección de sesión de BD
 async def get_db():
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# CONTROLADORES DE API (ENDPOINTS)
+# CONTROLADORES (ENDPOINTS)
 # -----------------------------------------------------------------------------
 
 @app.get("/")
 def leer_raiz(): 
-    """Verificación de estado del servicio."""
-    return {"mensaje": "API Taxi Funcionando (v11.0 - IDs + Estado Activo)."}
+    return {"mensaje": "API Taxi Funcionando."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """Autentica usuario y recupera datos de perfil según rol."""
+    """Autentica usuario y retorna información de perfil según rol."""
     try:
         res = await db.execute(text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'"))
         user = res.fetchone()
-        if not user: return {"error": "Credenciales inválidas"}
+        
+        if not user:
+            return {"error": "Credenciales inválidas"}
 
         nombre_real = "Usuario"
         if user.role == 'cliente':
@@ -282,8 +272,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
-    """Registra nuevo pasajero creando usuario y perfil de cliente."""
-    print(f"--> Registrando Pasajero: {datos.nombre}")
+    """Registra un nuevo usuario con perfil de cliente."""
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar():
@@ -301,8 +290,7 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
 
 @app.post("/registrar_conductor")
 async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Registra conductor, crea usuario y vincula vehículo nuevo."""
-    print(f"--> Registrando Conductor: {datos.nombre}")
+    """Registra conductor, vehículo y perfil asociado."""
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Correo existe."}
@@ -310,15 +298,24 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
             
             uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
             vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
+            
             f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
             await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"), 
             {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
-        return {"mensaje": "Conductor registrado", "id": uid}
+            
+            # Creación automática de perfil cliente para el conductor
+            try:
+                nombres_completos = datos.nombre.split(" ")
+                await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
+                {"u": uid, "n": datos.nombre, "p": "Ecuador", "c": "Santa Elena", "t": datos.telefono, "f": f_nac})
+            except: pass
+
+        return {"mensaje": "Conductor registrado exitosamente", "id": uid}
     except Exception as e: return {"error": str(e)}
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Crea una solicitud de viaje con coordenadas GPS."""
+    """Registra una nueva solicitud de viaje."""
     try:
         async with db.begin():
             await db.execute(text("""
@@ -338,13 +335,13 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
-    """Lista viajes disponibles para conductores."""
+    """Lista los viajes en estado pendiente."""
     res = await db.execute(text("SELECT * FROM viajes WHERE estado='pendiente'"))
     return [{"id": v.id, "origen": v.origen, "destino": v.destino, "tarifa": v.tarifa, "estado": v.estado} for v in res.fetchall()]
 
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Asigna un conductor a un viaje pendiente."""
+    """Asigna un conductor a un viaje."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
@@ -353,7 +350,7 @@ async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
-    """Agrega un nuevo contacto de confianza."""
+    """Agrega un contacto de emergencia."""
     try:
         async with db.begin():
             await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
@@ -362,13 +359,12 @@ async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db
 
 @app.get("/contactos/listar/{uid}")
 async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
-    """Obtiene agenda de contactos de un usuario."""
+    """Lista contactos de emergencia por usuario."""
     res = await db.execute(text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"), {"uid": uid})
     return [{"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp} for c in res.fetchall()]
 
 @app.put("/contactos/editar/{cid}")
 async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
-    """Modifica datos de un contacto existente."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
@@ -377,7 +373,6 @@ async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession
 
 @app.delete("/contactos/eliminar/{cid}")
 async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
-    """Elimina un contacto de la agenda."""
     try:
         async with db.begin():
             await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
@@ -386,7 +381,7 @@ async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
 
 @app.post("/sos/activar")
 async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
-    """Registra un evento de pánico en la bitácora."""
+    """Registra una alerta de pánico."""
     try:
         async with db.begin():
             await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
@@ -395,7 +390,7 @@ async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/conductores/ubicacion")
 async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Actualiza la posición GPS del conductor en tiempo real."""
+    """Actualiza la ubicación GPS del conductor."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
@@ -404,7 +399,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
 
 @app.post("/conductores/estado")
 async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Modifica el estado operativo del conductor (Online/Offline)."""
+    """Cambia el estado operativo (Activo/Inactivo) del conductor."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
@@ -413,7 +408,7 @@ async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depen
 
 @app.get("/conductores/cercanos")
 async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
-    """Busca conductores activos dentro de un radio geográfico."""
+    """Busca conductores activos cercanos."""
     try:
         query = text("""
             SELECT c.id_conductor, c.nom_apell, v.placa, v.modelo,
