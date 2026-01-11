@@ -327,23 +327,22 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Crea una solicitud de viaje con coordenadas GPS (Manejo robusto de NULLs)."""
+    """Crea una solicitud de viaje con coordenadas GPS (Manejo robusto WKT)."""
     try:
         async with db.begin():
-            # Lógica condicional: Si no hay coordenadas, insertamos NULL directamente en SQL
-            # para evitar que PostGIS falle intentando crear puntos vacíos.
-            # AGREGADO: ::float para evitar ambigüedad de tipos en Postgres
+            # ESTRATEGIA ROBUSTA: Usar WKT (Well-Known Text) para geometría
+            # Construimos el string 'POINT(lng lat)' en Python para evitar errores de casting en SQL
             
-            geo_origen = "NULL"
+            wkt_origen = None
             if v.origen_lng is not None and v.origen_lat is not None:
-                geo_origen = "ST_SetSRID(ST_MakePoint(:olng::float, :olat::float), 4326)"
-                
-            geo_destino = "NULL"
+                wkt_origen = f"POINT({v.origen_lng} {v.origen_lat})"
+            
+            wkt_destino = None
             if v.destino_lng is not None and v.destino_lat is not None:
-                geo_destino = "ST_SetSRID(ST_MakePoint(:dlng::float, :dlat::float), 4326)"
+                wkt_destino = f"POINT({v.destino_lng} {v.destino_lat})"
 
-            # Usamos f-string para inyectar la función correcta o NULL
-            query = text(f"""
+            # Usamos ST_GeomFromText que acepta el string creado arriba o NULL
+            query = text("""
                 INSERT INTO viajes (
                     cliente_id, origen, destino, tarifa, estado, 
                     origen_lat, origen_lng, destino_lat, destino_lng,
@@ -351,8 +350,8 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
                 ) VALUES (
                     :cid, :ori, :des, :tar, 'pendiente', 
                     :olat, :olng, :dlat, :dlng,
-                    {geo_origen},
-                    {geo_destino}
+                    ST_GeomFromText(:wkt_ori, 4326),
+                    ST_GeomFromText(:wkt_des, 4326)
                 )
             """)
             
@@ -364,14 +363,15 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
                 "olat": v.origen_lat, 
                 "olng": v.origen_lng, 
                 "dlat": v.destino_lat, 
-                "dlng": v.destino_lng
+                "dlng": v.destino_lng,
+                "wkt_ori": wkt_origen, # Pasamos el string o None
+                "wkt_des": wkt_destino
             })
         return {"mensaje": "Viaje solicitado"}
     except Exception as e:
         print(f"Error detallado solicitando viaje: {e}")
         # Retornamos el error para que la App sepa qué pasó
         return {"error": f"Error base de datos: {str(e)}"}
-
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
     """Lista viajes disponibles para conductores."""
@@ -467,6 +467,7 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
