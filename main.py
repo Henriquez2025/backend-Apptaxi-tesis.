@@ -374,9 +374,43 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
         return {"error": f"Error base de datos: {str(e)}"}
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
-    """Lista viajes disponibles para conductores."""
-    res = await db.execute(text("SELECT * FROM viajes WHERE estado='pendiente'"))
-    return [{"id": v.id, "origen": v.origen, "destino": v.destino, "tarifa": v.tarifa, "estado": v.estado, "origen_lat": v.origen_lat, "origen_lng": v.origen_lng} for v in res.fetchall()]
+    """
+    Lista viajes pendientes. 
+    IMPORTANTE: Seleccionamos columnas explícitas para evitar traer 
+    objetos de Geometría PostGIS que rompen la serialización JSON.
+    """
+    try:
+        # Hacemos un JOIN para obtener el nombre del cliente directamente
+        query = text("""
+            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, 
+                   v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
+                   c.nom_apell
+            FROM viajes v
+            LEFT JOIN clientes c ON v.cliente_id = c.usuario_id
+            WHERE v.estado='pendiente'
+        """)
+        
+        result = await db.execute(query)
+        viajes = result.fetchall()
+        
+        lista = []
+        for v in viajes:
+            lista.append({
+                "id": v.id, 
+                "origen": v.origen, 
+                "destino": v.destino, 
+                "tarifa": v.tarifa, 
+                "estado": v.estado,
+                "cliente": v.nom_apell or "Cliente App", # Si no hay nombre, ponemos genérico
+                "origen_lat": v.origen_lat,
+                "origen_lng": v.origen_lng,
+                "destino_lat": v.destino_lat,
+                "destino_lng": v.destino_lng
+            })
+        return lista
+    except Exception as e:
+        print(f"Error listando pendientes: {e}")
+        return []
 
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
@@ -467,6 +501,7 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
