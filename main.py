@@ -332,14 +332,15 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
         async with db.begin():
             # Lógica condicional: Si no hay coordenadas, insertamos NULL directamente en SQL
             # para evitar que PostGIS falle intentando crear puntos vacíos.
+            # AGREGADO: ::float para evitar ambigüedad de tipos en Postgres
             
             geo_origen = "NULL"
             if v.origen_lng is not None and v.origen_lat is not None:
-                geo_origen = "ST_SetSRID(ST_MakePoint(:olng, :olat), 4326)"
+                geo_origen = "ST_SetSRID(ST_MakePoint(:olng::float, :olat::float), 4326)"
                 
             geo_destino = "NULL"
             if v.destino_lng is not None and v.destino_lat is not None:
-                geo_destino = "ST_SetSRID(ST_MakePoint(:dlng, :dlat), 4326)"
+                geo_destino = "ST_SetSRID(ST_MakePoint(:dlng::float, :dlat::float), 4326)"
 
             # Usamos f-string para inyectar la función correcta o NULL
             query = text(f"""
@@ -466,4 +467,5 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
