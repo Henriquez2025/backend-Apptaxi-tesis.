@@ -198,12 +198,13 @@ class EstadoConductorRequest(BaseModel):
     usuario_id: int; activo: bool
 
 # -----------------------------------------------------------------------------
-# INICIALIZACIÓN DE API Y PANEL ADMINISTRATIVO
+# INICIALIZACIÓN DE LA APLICACIÓN Y PANEL ADMINISTRATIVO
 # -----------------------------------------------------------------------------
 
 app = FastAPI(title="Taxi App API", description="API REST para gestión de transporte urbano.")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# Configuración de vistas para SQLAdmin
 admin = Admin(app, engine, title="Taxi Admin")
 
 class UsuarioAdmin(ModelView, model=Usuario):
@@ -241,20 +242,22 @@ class AlertaAdmin(ModelView, model=Alerta):
 admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin); admin.add_view(AdministradorAdmin)
 admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(EmergenciaAdmin); admin.add_view(AlertaAdmin)
 
+# Dependencia para inyección de sesión de BD
 async def get_db():
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS API REST
+# CONTROLADORES DE API (ENDPOINTS)
 # -----------------------------------------------------------------------------
 
 @app.get("/")
-def leer_raiz():
-    return {"mensaje": "Servicio API Taxi activo."}
+def leer_raiz(): 
+    """Verificación de estado del servicio."""
+    return {"mensaje": "API Taxi Funcionando (v11.0 - IDs + Estado Activo)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """Autenticación de usuario y recuperación de perfil asociado."""
+    """Autentica usuario y recupera datos de perfil según rol."""
     try:
         res = await db.execute(text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'"))
         user = res.fetchone()
@@ -274,12 +277,14 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
             if res_adm: nombre_real = res_adm.nom_apell
 
         return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
-    except Exception:
-        return {"error": "Error interno del servidor"}
+    except Exception as e: 
+        print(f"Error Login: {e}")
+        return {"error": "Error interno"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
-    """Registro de nuevo usuario con perfil de cliente."""
+    """Registra un nuevo usuario con perfil de cliente."""
+    print(f"--> Registrando Pasajero: {datos.nombre}")
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar():
@@ -293,12 +298,12 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                 {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
             except: pass
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": f"Error: {str(e)}"}
 
 @app.post("/registrar_conductor")
 async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Registro de conductor, vehículo y vinculación de perfiles."""
+    """Registra conductor, vehículo y vinculación de perfiles."""
+    print(f"--> Registrando Conductor: {datos.nombre}")
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Correo existe."}
@@ -310,13 +315,19 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
             
             await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"), 
             {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
+            
+            # Creación automática de perfil cliente para el conductor
+            try:
+                await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
+                {"u": uid, "n": datos.nombre, "p": "Ecuador", "c": "Santa Elena", "t": datos.telefono, "f": f_nac})
+            except: pass
+
         return {"mensaje": "Conductor registrado", "id": uid}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Creación de solicitud de viaje con georreferenciación."""
+    """Crea una solicitud de viaje con coordenadas GPS."""
     try:
         async with db.begin():
             await db.execute(text("""
@@ -336,29 +347,13 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
+    """Lista viajes disponibles para conductores."""
     res = await db.execute(text("SELECT * FROM viajes WHERE estado='pendiente'"))
-    viajes = res.fetchall()
-    
-    lista = []
-    for v in viajes:
-        lista.append({
-            "id": v.id, 
-            "origen": v.origen, 
-            "destino": v.destino, 
-            "tarifa": v.tarifa, 
-            "estado": v.estado,
-            "cliente": "Cliente App", # Simplificado
-            # ¡ESTO ES LO QUE FALTABA PARA EL MAPA!
-            "origen_lat": v.origen_lat,
-            "origen_lng": v.origen_lng,
-            "destino_lat": v.destino_lat,
-            "destino_lng": v.destino_lng
-        })
-    return lista
+    return [{"id": v.id, "origen": v.origen, "destino": v.destino, "tarifa": v.tarifa, "estado": v.estado, "origen_lat": v.origen_lat, "origen_lng": v.origen_lng} for v in res.fetchall()]
 
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Asignación de viaje a conductor."""
+    """Asigna un conductor a un viaje pendiente."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
@@ -367,7 +362,7 @@ async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
-    """Registro de contacto de emergencia."""
+    """Agrega un nuevo contacto de confianza."""
     try:
         async with db.begin():
             await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
@@ -376,13 +371,13 @@ async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db
 
 @app.get("/contactos/listar/{uid}")
 async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
-    """Recuperación de lista de contactos de emergencia."""
+    """Obtiene agenda de contactos de un usuario."""
     res = await db.execute(text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"), {"uid": uid})
     return [{"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp} for c in res.fetchall()]
 
 @app.put("/contactos/editar/{cid}")
 async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
-    """Actualización de información de contacto."""
+    """Modifica datos de un contacto existente."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
@@ -391,7 +386,7 @@ async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession
 
 @app.delete("/contactos/eliminar/{cid}")
 async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
-    """Eliminación de registro de contacto."""
+    """Elimina un contacto de la agenda."""
     try:
         async with db.begin():
             await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
@@ -400,7 +395,7 @@ async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
 
 @app.post("/sos/activar")
 async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
-    """Registro de auditoría de evento de pánico."""
+    """Registra un evento de pánico en la bitácora."""
     try:
         async with db.begin():
             await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
@@ -409,7 +404,7 @@ async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/conductores/ubicacion")
 async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Actualización de coordenadas GPS del conductor en tiempo real."""
+    """Actualiza la ubicación GPS del conductor en tiempo real."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
@@ -418,7 +413,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
 
 @app.post("/conductores/estado")
 async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Modificación de estado operativo del conductor."""
+    """Modifica el estado operativo del conductor (Online/Offline)."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
@@ -427,7 +422,7 @@ async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depen
 
 @app.get("/conductores/cercanos")
 async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
-    """Consulta espacial de conductores activos en radio específico."""
+    """Busca conductores activos dentro de un radio geográfico."""
     try:
         query = text("""
             SELECT c.id_conductor, c.nom_apell, v.placa, v.modelo,
@@ -445,4 +440,3 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
