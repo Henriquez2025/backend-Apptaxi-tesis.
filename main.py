@@ -1,76 +1,76 @@
-# Importaciones de librerías para la API y gestión de datos
-from fastapi.middleware.cors import CORSMiddleware
+# Importaciones estándar y de terceros
+import os
+import urllib.parse
+from datetime import date, datetime
+from typing import Optional, List
+
 import uvicorn
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import warnings
-from typing import Optional, List
-from datetime import datetime
-import os
-import urllib.parse 
-
-# Importaciones para Panel Administrativo y ORM
-from sqladmin import Admin, ModelView
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
 from sqlalchemy.sql import func
-from geoalchemy2 import Geometry 
+from sqladmin import Admin, ModelView
+from geoalchemy2 import Geometry
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN DE CONEXIÓN A BASE DE DATOS
+# CONFIGURACIÓN DE INFRAESTRUCTURA DE BASE DE DATOS
 # -----------------------------------------------------------------------------
 
-PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
+# Credenciales de acceso al cluster de base de datos (Supabase)
+PROJECT_ID = "vjhggvxkhowlnbppuiuw"
 DB_PASSWORD = "XYZ*147258369*XYZ"
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
-SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
+SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com"
 SUPABASE_PORT = "6543"
-SUPABASE_DB   = "postgres"
+SUPABASE_DB = "postgres"
 
-# Codificación de credenciales para cadena de conexión
+# Codificación de credenciales para cadena de conexión segura
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
+
+# Construcción de DSN para SQLAlchemy con soporte AsyncPG y Pooler
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
-# Selección de entorno de despliegue
+# Selección de entorno de ejecución
 if os.getenv("DATABASE_URL"):
-    # Entorno Producción (Render/Nube)
     DATABASE_URL = CLOUD_DATABASE_URL
 else:
-    # Entorno Desarrollo (Local)
+    # Entorno local de desarrollo
     DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost:5432/taxi_app_db"
 
-# Inicialización del motor de base de datos
+# Inicialización del motor de base de datos con verificación de estado
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True, 
+    pool_pre_ping=True
 )
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
 # -----------------------------------------------------------------------------
-# DEFINICIÓN DE MODELOS (ORM)
+# DEFINICIÓN DE MODELOS ORM
 # -----------------------------------------------------------------------------
 
 class Usuario(Base):
-    """Entidad principal de autenticación."""
+    """Entidad principal para autenticación y roles de sistema."""
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True)
-    password_hash = Column(String) 
-    role = Column(String) 
+    password_hash = Column(String)
+    role = Column(String)
     
     perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
     perfil_conductor = relationship("Conductor", back_populates="usuario", uselist=False)
     perfil_admin = relationship("Administrador", back_populates="usuario", uselist=False)
 
 class Cliente(Base):
-    """Perfil de usuario tipo pasajero."""
+    """Información de perfil para usuarios tipo pasajero."""
     __tablename__ = "clientes"
     id_cliente = Column(Integer, primary_key=True)
-    usuario_id = Column(Integer, ForeignKey("usuarios.id")) 
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
     nom_apell = Column(String)
     pais = Column(String)
     ciudad = Column(String)
@@ -80,7 +80,7 @@ class Cliente(Base):
     usuario = relationship("Usuario", back_populates="perfil_cliente")
 
 class Vehiculo(Base):
-    """Registro de unidades vehiculares."""
+    """Registro de unidades de transporte."""
     __tablename__ = "vehiculos"
     id = Column(Integer, primary_key=True)
     marca = Column(String)
@@ -90,7 +90,7 @@ class Vehiculo(Base):
     anio = Column(String, nullable=True)
 
 class Conductor(Base):
-    """Perfil operativo de conductor asociado a un vehículo."""
+    """Perfil operativo de conductor y estado en tiempo real."""
     __tablename__ = "conductores"
     id_conductor = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -104,38 +104,41 @@ class Conductor(Base):
     usuario = relationship("Usuario", back_populates="perfil_conductor")
     vehiculo = relationship("Vehiculo")
 
-class Administrador(Base): 
-    """Perfil de usuario con privilegios administrativos."""
+class Administrador(Base):
+    """Perfil para gestión administrativa del sistema."""
     __tablename__ = "administradores"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
     nom_apell = Column(String)
     cargo = Column(String)
     telefono = Column(String)
+
     usuario = relationship("Usuario", back_populates="perfil_admin")
 
 class Emergencia(Base):
-    """Agenda de contactos de confianza."""
+    """Agenda de contactos de emergencia por usuario."""
     __tablename__ = "emergencia"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
     nombre_contacto = Column(String)
     numero_whatsapp = Column(String)
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
+    
     usuario = relationship("Usuario")
 
 class Alerta(Base):
-    """Registro de eventos de seguridad (Botón de Pánico)."""
+    """Registro de auditoría para eventos de seguridad."""
     __tablename__ = "alertas"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
     ubicacion = Column(String)
     mensaje_extra = Column(String)
     fecha = Column(DateTime(timezone=True), server_default=func.now())
+    
     usuario = relationship("Usuario")
 
 class Viaje(Base):
-    """Transacciones de servicio de transporte."""
+    """Registro transaccional de servicios de transporte."""
     __tablename__ = "viajes"
     id = Column(Integer, primary_key=True)
     cliente_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -157,6 +160,7 @@ class Viaje(Base):
 # -----------------------------------------------------------------------------
 # ESQUEMAS DE TRANSFERENCIA DE DATOS (DTOs)
 # -----------------------------------------------------------------------------
+
 class LoginRequest(BaseModel):
     email: str; password: str
 
@@ -170,7 +174,7 @@ class AceptarViajeRequest(BaseModel):
 
 class UsuarioRegistroRequest(BaseModel):
     nombre: str; email: str; password: str; role: str = "cliente"
-    telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None 
+    telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None
     pais: Optional[str] = None; ciudad: Optional[str] = None
 
 class RegistroConductorRequest(BaseModel):
@@ -180,24 +184,28 @@ class RegistroConductorRequest(BaseModel):
 
 class ContactoRequest(BaseModel):
     usuario_id: int; nombre_contacto: str; numero_whatsapp: str
+
 class ContactoEditRequest(BaseModel):
     nombre_contacto: str; numero_whatsapp: str
+
 class AlertaRequest(BaseModel):
     usuario_id: int; ubicacion: str; mensaje: str
+
 class UbicacionConductorRequest(BaseModel):
     usuario_id: int; latitud: float; longitud: float
+
 class EstadoConductorRequest(BaseModel):
     usuario_id: int; activo: bool
 
 # -----------------------------------------------------------------------------
-# INICIALIZACIÓN DE LA API Y PANEL ADMINISTRATIVO
+# INICIALIZACIÓN DE API Y PANEL ADMINISTRATIVO
 # -----------------------------------------------------------------------------
-app = FastAPI(title="Taxi App API", description="API REST para gestión de servicios de transporte.")
+
+app = FastAPI(title="Taxi App API", description="API REST para gestión de transporte urbano.")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 admin = Admin(app, engine, title="Taxi Admin")
 
-# Configuración de vistas del panel
 class UsuarioAdmin(ModelView, model=Usuario):
     name, name_plural, icon = "Usuario", "Usuarios", "fa-solid fa-user-lock"
     column_list = [Usuario.id, Usuario.email, Usuario.role]
@@ -237,16 +245,16 @@ async def get_db():
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# CONTROLADORES (ENDPOINTS)
+# ENDPOINTS API REST
 # -----------------------------------------------------------------------------
 
 @app.get("/")
-def leer_raiz(): 
-    return {"mensaje": "API Taxi Funcionando."}
+def leer_raiz():
+    return {"mensaje": "Servicio API Taxi activo."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """Autentica usuario y retorna información de perfil según rol."""
+    """Autenticación de usuario y recuperación de perfil asociado."""
     try:
         res = await db.execute(text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'"))
         user = res.fetchone()
@@ -266,13 +274,12 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
             if res_adm: nombre_real = res_adm.nom_apell
 
         return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
-    except Exception as e: 
-        print(f"Error Login: {e}")
-        return {"error": "Error interno"}
+    except Exception:
+        return {"error": "Error interno del servidor"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
-    """Registra un nuevo usuario con perfil de cliente."""
+    """Registro de nuevo usuario con perfil de cliente."""
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar():
@@ -286,11 +293,12 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                 {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
             except: pass
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
-    except Exception as e: return {"error": f"Error: {str(e)}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/registrar_conductor")
 async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Registra conductor, vehículo y perfil asociado."""
+    """Registro de conductor, vehículo y vinculación de perfiles."""
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Correo existe."}
@@ -298,24 +306,17 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
             
             uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
             vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
-            
             f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
+            
             await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"), 
             {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
-            
-            # Creación automática de perfil cliente para el conductor
-            try:
-                nombres_completos = datos.nombre.split(" ")
-                await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
-                {"u": uid, "n": datos.nombre, "p": "Ecuador", "c": "Santa Elena", "t": datos.telefono, "f": f_nac})
-            except: pass
-
-        return {"mensaje": "Conductor registrado exitosamente", "id": uid}
-    except Exception as e: return {"error": str(e)}
+        return {"mensaje": "Conductor registrado", "id": uid}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Registra una nueva solicitud de viaje."""
+    """Creación de solicitud de viaje con georreferenciación."""
     try:
         async with db.begin():
             await db.execute(text("""
@@ -335,7 +336,7 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
-    # Traemos las coordenadas también
+    """Consulta de viajes disponibles con coordenadas para mapa."""
     query = text("SELECT * FROM viajes WHERE estado='pendiente'")
     result = await db.execute(query)
     viajes = result.fetchall()
@@ -348,7 +349,6 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
             "destino": v.destino, 
             "tarifa": v.tarifa, 
             "estado": v.estado,
-            # AGREGAMOS ESTOS DATOS PARA EL MAPA:
             "origen_lat": v.origen_lat,
             "origen_lng": v.origen_lng
         })
@@ -356,7 +356,7 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
 
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Asigna un conductor a un viaje."""
+    """Asignación de viaje a conductor."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
@@ -365,7 +365,7 @@ async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
-    """Agrega un contacto de emergencia."""
+    """Registro de contacto de emergencia."""
     try:
         async with db.begin():
             await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
@@ -374,12 +374,13 @@ async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db
 
 @app.get("/contactos/listar/{uid}")
 async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
-    """Lista contactos de emergencia por usuario."""
+    """Recuperación de lista de contactos de emergencia."""
     res = await db.execute(text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"), {"uid": uid})
     return [{"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp} for c in res.fetchall()]
 
 @app.put("/contactos/editar/{cid}")
 async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
+    """Actualización de información de contacto."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
@@ -388,6 +389,7 @@ async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession
 
 @app.delete("/contactos/eliminar/{cid}")
 async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
+    """Eliminación de registro de contacto."""
     try:
         async with db.begin():
             await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
@@ -396,7 +398,7 @@ async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
 
 @app.post("/sos/activar")
 async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
-    """Registra una alerta de pánico."""
+    """Registro de auditoría de evento de pánico."""
     try:
         async with db.begin():
             await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
@@ -405,7 +407,7 @@ async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/conductores/ubicacion")
 async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Actualiza la ubicación GPS del conductor."""
+    """Actualización de coordenadas GPS del conductor en tiempo real."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
@@ -414,7 +416,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
 
 @app.post("/conductores/estado")
 async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
-    """Cambia el estado operativo (Activo/Inactivo) del conductor."""
+    """Modificación de estado operativo del conductor."""
     try:
         async with db.begin():
             await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
@@ -423,7 +425,7 @@ async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depen
 
 @app.get("/conductores/cercanos")
 async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
-    """Busca conductores activos cercanos."""
+    """Consulta espacial de conductores activos en radio específico."""
     try:
         query = text("""
             SELECT c.id_conductor, c.nom_apell, v.placa, v.modelo,
@@ -441,4 +443,3 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
