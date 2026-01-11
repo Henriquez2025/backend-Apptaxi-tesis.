@@ -327,10 +327,22 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Crea una solicitud de viaje con coordenadas GPS."""
+    """Crea una solicitud de viaje con coordenadas GPS (Manejo robusto de NULLs)."""
     try:
         async with db.begin():
-            await db.execute(text("""
+            # Lógica condicional: Si no hay coordenadas, insertamos NULL directamente en SQL
+            # para evitar que PostGIS falle intentando crear puntos vacíos.
+            
+            geo_origen = "NULL"
+            if v.origen_lng is not None and v.origen_lat is not None:
+                geo_origen = "ST_SetSRID(ST_MakePoint(:olng, :olat), 4326)"
+                
+            geo_destino = "NULL"
+            if v.destino_lng is not None and v.destino_lat is not None:
+                geo_destino = "ST_SetSRID(ST_MakePoint(:dlng, :dlat), 4326)"
+
+            # Usamos f-string para inyectar la función correcta o NULL
+            query = text(f"""
                 INSERT INTO viajes (
                     cliente_id, origen, destino, tarifa, estado, 
                     origen_lat, origen_lng, destino_lat, destino_lng,
@@ -338,12 +350,26 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
                 ) VALUES (
                     :cid, :ori, :des, :tar, 'pendiente', 
                     :olat, :olng, :dlat, :dlng,
-                    ST_SetSRID(ST_MakePoint(:olng, :olat), 4326),
-                    ST_SetSRID(ST_MakePoint(:dlng, :dlat), 4326)
+                    {geo_origen},
+                    {geo_destino}
                 )
-            """), {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng})
+            """)
+            
+            await db.execute(query, {
+                "cid": v.usuario_id, 
+                "ori": v.origen, 
+                "des": v.destino, 
+                "tar": v.tarifa, 
+                "olat": v.origen_lat, 
+                "olng": v.origen_lng, 
+                "dlat": v.destino_lat, 
+                "dlng": v.destino_lng
+            })
         return {"mensaje": "Viaje solicitado"}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e:
+        print(f"Error detallado solicitando viaje: {e}")
+        # Retornamos el error para que la App sepa qué pasó
+        return {"error": f"Error base de datos: {str(e)}"}
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
@@ -440,3 +466,4 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
