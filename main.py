@@ -336,10 +336,8 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
-    """Consulta de viajes disponibles con coordenadas para mapa."""
-    query = text("SELECT * FROM viajes WHERE estado='pendiente'")
-    result = await db.execute(query)
-    viajes = result.fetchall()
+    res = await db.execute(text("SELECT * FROM viajes WHERE estado='pendiente'"))
+    viajes = res.fetchall()
     
     lista = []
     for v in viajes:
@@ -349,8 +347,12 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
             "destino": v.destino, 
             "tarifa": v.tarifa, 
             "estado": v.estado,
+            "cliente": "Cliente App", # Simplificado
+            # ¡ESTO ES LO QUE FALTABA PARA EL MAPA!
             "origen_lat": v.origen_lat,
-            "origen_lng": v.origen_lng
+            "origen_lng": v.origen_lng,
+            "destino_lat": v.destino_lat,
+            "destino_lng": v.destino_lng
         })
     return lista
 
@@ -443,3 +445,4 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
