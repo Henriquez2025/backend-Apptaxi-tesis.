@@ -13,4 +13,4 @@ email-validator
 itsdangerous
 jinja2
 httpx
-GeoAlchemy2
+psycopg2-binary
