@@ -377,7 +377,7 @@ async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depend
                 await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
             return {"mensaje": "Clave correcta. Viaje iniciado.", "exito": True}
         else:
-            return {"error": f"Clave incorrecta (Esperaba: {real_limpia})", "exito": False}
+            return {"error": f"Clave incorrecta (Esperaba: {real_limpia})", "exito": False} # Solo para debug, luego quita el paréntesis
             
     except Exception as e: 
         print(f"Error validando: {e}")
@@ -492,4 +492,5 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
