@@ -26,15 +26,12 @@ SUPABASE_DB   = "postgres"
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
-# Lógica robusta para forzar driver asíncrono
 if os.getenv("DATABASE_URL"):
     url_env = os.getenv("DATABASE_URL")
-    # Reemplazar esquema para asegurar uso de asyncpg
     if url_env.startswith("postgres://"):
         url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url_env.startswith("postgresql://"):
         url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
-    
     DATABASE_URL = url_env
 else:
     DATABASE_URL = CLOUD_DATABASE_URL
@@ -49,7 +46,6 @@ try:
     )
 except Exception as e:
     print(f"FATAL: Error inicializando engine de DB: {e}")
-    # Si falla, imprimimos pero permitimos que el script intente seguir para ver logs
     pass 
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -222,7 +218,6 @@ class IniciarViajeRequest(BaseModel):
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Configuración Admin
 if engine:
     admin = Admin(app, engine, title="Taxi Admin")
     
@@ -270,25 +265,52 @@ async def get_db():
 # -----------------------------------------------------------------------------
 
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Service Running (v20.0 - Async Fix)."}
+def leer_raiz(): return {"mensaje": "API Taxi Service Running (v21.0 - Login Fix)."}
 
+# --- LOGIN CORREGIDO Y ROBUSTO ---
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Autenticación segura con parámetros enlazados."""
     try:
-        res = await db.execute(text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'"))
+        # 1. Buscamos solo por email primero (más seguro y depurable)
+        res = await db.execute(
+            text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), 
+            {"email": datos.email}
+        )
         user = res.fetchone()
-        if not user: return {"error": "Credenciales inválidas"}
         
+        if not user:
+            return {"error": "Usuario no encontrado"}
+
+        # 2. Verificación de contraseña (texto plano por ahora, preparado para hash)
+        # IMPORTANTE: Si en tu BD las claves están hasheadas, esta comparación fallará.
+        # Para el prototipo, asumimos que guardas texto plano.
+        if user.password_hash != datos.password:
+             return {"error": "Contraseña incorrecta"}
+
+        # 3. Obtener nombre real según rol
         nombre_real = "Usuario"
-        if user.role == 'cliente':
-            res_cli = (await db.execute(text(f"SELECT nom_apell FROM clientes WHERE usuario_id={user.id}"))).fetchone()
-            if res_cli: nombre_real = res_cli.nom_apell
-        elif user.role == 'conductor':
-            res_cond = (await db.execute(text(f"SELECT nom_apell FROM conductores WHERE usuario_id={user.id}"))).fetchone()
-            if res_cond: nombre_real = res_cond.nom_apell
-            
-        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
-    except Exception as e: return {"error": f"Error interno: {str(e)}"}
+        try:
+            if user.role == 'cliente':
+                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cli: nombre_real = res_cli.nom_apell
+            elif user.role == 'conductor':
+                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cond: nombre_real = res_cond.nom_apell
+        except:
+            pass # Si falla el nombre, no bloqueamos el login
+
+        return {
+            "mensaje": "Login OK", 
+            "usuario": {
+                "id": user.id, 
+                "nombre": nombre_real, 
+                "role": user.role
+            }
+        }
+    except Exception as e:
+        print(f"Error Login: {e}")
+        return {"error": f"Error interno: {str(e)}"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
