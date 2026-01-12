@@ -15,78 +15,62 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACIÓN DE INFRAESTRUCTURA DB ---
-# Se utiliza el Transaction Pooler (Puerto 6543) para garantizar compatibilidad IPv4 en entornos como Render.
+# --- CONFIGURACIÓN DE BASE DE DATOS ---
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
 
+# Configuración Connection Pooler (Puerto 6543 - IPv4)
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
 SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
 SUPABASE_PORT = "6543" 
 SUPABASE_DB   = "postgres"
 
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-
-# Cadena de conexión explícita para Pooler con SSL
-# prepared_statement_cache_size=0 es recomendado para PgBouncer/Supabase Pooler
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?ssl=require&prepared_statement_cache_size=0"
 
-# Lógica de selección de URL de base de datos
-# Priorizamos CLOUD_DATABASE_URL si se detecta entorno de nube para asegurar el uso del Pooler IPv4.
-if os.getenv("RENDER") or os.getenv("DATABASE_URL"):
-    # En Render, forzamos nuestra URL configurada manualmente para evitar problemas de IPv6/Driver
-    DATABASE_URL = CLOUD_DATABASE_URL
+if os.getenv("DATABASE_URL"):
+    url_env = os.getenv("DATABASE_URL")
+    if url_env.startswith("postgres://"):
+        url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url_env.startswith("postgresql://"):
+        url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # Forzar uso de Pooler si Render falla con IPv6
+    DATABASE_URL = CLOUD_DATABASE_URL 
 else:
-    # Fallback local o desarrollo
     DATABASE_URL = CLOUD_DATABASE_URL
 
-# Inicialización del Motor SQL
-# Se imprime el host para verificación en logs (sin credenciales)
-print(f"--- INICIANDO CONEXIÓN A DB (POOLER) ---")
-print(f"HOST: {SUPABASE_HOST}")
-print(f"PORT: {SUPABASE_PORT}")
-
+# Inicialización del Motor
 engine = None
 try:
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
-        # Configuración específica para estabilidad con Poolers
         connect_args={"server_settings": {"jit": "off"}, "command_timeout": 60}
     )
 except Exception as e:
-    print(f"FATAL: Error crítico al inicializar motor DB: {e}")
+    print(f"FATAL: Error inicializando engine DB: {e}")
 
+# expire_on_commit=False es clave para async
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-# Diccionario de tokens para validación de seguridad
-PALABRAS_CLAVE = [
-    "SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", 
-    "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", 
-    "ROCK", "MENTA", "COCO", "LIMA", "ALFA", "BETA", "GAMA", 
-    "RISA", "VIDA", "ARBOL", "CIEGO", "LINDO", "PIANO"
-]
+PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
 
 # -----------------------------------------------------------------------------
-# MODELOS DE DATOS (ORM)
+# MODELOS ORM
 # -----------------------------------------------------------------------------
-
 class Usuario(Base):
-    """Entidad base para gestión de accesos."""
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True)
     password_hash = Column(String)
     role = Column(String)
-    
     perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
     perfil_conductor = relationship("Conductor", back_populates="usuario", uselist=False)
     perfil_admin = relationship("Administrador", back_populates="usuario", uselist=False)
 
 class Cliente(Base):
-    """Perfil de usuario pasajero."""
     __tablename__ = "clientes"
     id_cliente = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -98,7 +82,6 @@ class Cliente(Base):
     usuario = relationship("Usuario", back_populates="perfil_cliente")
 
 class Vehiculo(Base):
-    """Registro de unidades de transporte."""
     __tablename__ = "vehiculos"
     id = Column(Integer, primary_key=True)
     marca = Column(String)
@@ -108,7 +91,6 @@ class Vehiculo(Base):
     anio = Column(String, nullable=True)
 
 class Conductor(Base):
-    """Perfil operativo de conductor."""
     __tablename__ = "conductores"
     id_conductor = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -118,12 +100,10 @@ class Conductor(Base):
     fecha_nacimiento = Column(Date)
     ubicacion = Column(Geometry('POINT', srid=4326), nullable=True)
     activo = Column(Boolean, default=False)
-
     usuario = relationship("Usuario", back_populates="perfil_conductor")
     vehiculo = relationship("Vehiculo")
 
 class Administrador(Base):
-    """Perfil administrativo."""
     __tablename__ = "administradores"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -133,7 +113,6 @@ class Administrador(Base):
     usuario = relationship("Usuario", back_populates="perfil_admin")
 
 class Emergencia(Base):
-    """Contactos de confianza."""
     __tablename__ = "emergencia"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -143,7 +122,6 @@ class Emergencia(Base):
     usuario = relationship("Usuario")
 
 class Alerta(Base):
-    """Registro de eventos de seguridad."""
     __tablename__ = "alertas"
     id = Column(Integer, primary_key=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -153,7 +131,6 @@ class Alerta(Base):
     usuario = relationship("Usuario")
 
 class Viaje(Base):
-    """Transacciones de servicio de transporte."""
     __tablename__ = "viajes"
     id = Column(Integer, primary_key=True)
     cliente_id = Column(Integer, ForeignKey("usuarios.id"))
@@ -162,25 +139,20 @@ class Viaje(Base):
     destino = Column(String)
     estado = Column(String, default='pendiente')
     tarifa = Column(Float)
-    
     origen_lat = Column(Float, nullable=True)
     origen_lng = Column(Float, nullable=True)
     destino_lat = Column(Float, nullable=True)
     destino_lng = Column(Float, nullable=True)
-    
     origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
-    
     clave_seguridad = Column(String, nullable=True)
     fecha_creacion = Column(DateTime(timezone=True), server_default=func.now())
-    
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
 # -----------------------------------------------------------------------------
 # DTOs
 # -----------------------------------------------------------------------------
-
 class LoginRequest(BaseModel):
     email: str; password: str
 
@@ -227,9 +199,8 @@ class IniciarViajeRequest(BaseModel):
     viaje_id: int; clave_ingresada: str
 
 # -----------------------------------------------------------------------------
-# APP & ADMIN
+# CONFIGURACIÓN APP & ADMIN
 # -----------------------------------------------------------------------------
-
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -249,19 +220,19 @@ if engine:
     admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
 
 async def get_db():
-    if not engine: raise HTTPException(status_code=500, detail="Database engine not initialized")
+    if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS
+# ENDPOINTS API (CORREGIDOS PARA EVITAR 'TRANSACTION ALREADY BEGUN')
 # -----------------------------------------------------------------------------
-
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Running (v26.0 - Pooler Force)."}
+def leer_raiz(): return {"mensaje": "API Taxi Running (v28.0 - Transaction Fix)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
+        # Solo lectura, no requiere commit
         res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
         user = res.fetchone()
         
@@ -280,47 +251,60 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
 
         return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
     except Exception as e:
-        print(f"LOGIN ERROR: {e}")
         return {"error": f"Error interno: {str(e)}"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin():
-            if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
-            uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
-            try:
-                f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
-                await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
-                {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
-            except: pass
+        # Eliminamos 'async with db.begin()' para evitar anidamiento
+        if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
+        
+        uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
+        try:
+            f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
+            await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
+            {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
+        except: pass
+        
+        await db.commit() # Commit manual
         return {"mensaje": "Registrado", "id": uid}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
 
 @app.post("/registrar_conductor")
 async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin():
-            if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
-            uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
-            vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
-            f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
-            await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"), {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
+        if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
+        
+        uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
+        vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
+        
+        f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
+        await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"), {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
+        
+        await db.commit()
         return {"mensaje": "Conductor registrado", "id": uid}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin():
-            clave = random.choice(PALABRAS_CLAVE)
-            geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
-            geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
-            query = text(f"INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, {geo_ori}, {geo_des}, :clave, NOW()) RETURNING id")
-            res = await db.execute(query, {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng, "clave": clave})
-            vid = res.scalar()
+        clave = random.choice(PALABRAS_CLAVE)
+        geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
+        geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
+        
+        query = text(f"INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, {geo_ori}, {geo_des}, :clave, NOW()) RETURNING id")
+        res = await db.execute(query, {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng, "clave": clave})
+        vid = res.scalar()
+        
+        await db.commit()
         return {"mensaje": "Viaje solicitado", "id_viaje": vid, "clave": clave}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
@@ -346,62 +330,54 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin():
-            st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-            if st != 'pendiente': return {"error": "Viaje no disponible"}
-            await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
+        st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+        if st != 'pendiente': return {"error": "Viaje no disponible"}
+        
+        await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
+        await db.commit()
         return {"mensaje": "Viaje aceptado"}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
 
 @app.post("/viajes/validar_inicio")
 async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Buscamos la clave real
-        res = await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
-        clave_real = res.scalar()
+        real = (await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+        if not real: return {"error": "Datos no encontrados", "exito": False}
         
-        if not clave_real:
-             return {"error": "Viaje no encontrado o sin clave", "exito": False}
-             
-        # Limpieza estricta para comparación
-        entrada_limpia = d.clave_ingresada.strip().upper()
-        real_limpia = clave_real.strip().upper()
-
-        # DEBUG LOG (Verás esto en la consola de Render)
-        print(f"--- VALIDANDO CLAVE ---")
-        print(f"Recibida: '{entrada_limpia}'")
-        print(f"Esperada: '{real_limpia}'")
-        
-        if entrada_limpia == real_limpia:
-            async with db.begin():
-                await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
-            return {"mensaje": "Clave correcta. Viaje iniciado.", "exito": True}
-        else:
-            return {"error": f"Clave incorrecta (Esperaba: {real_limpia})", "exito": False} # Solo para debug, luego quita el paréntesis
-            
+        if d.clave_ingresada.upper().strip() == real.upper().strip():
+            await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
+            await db.commit()
+            return {"mensaje": "OK", "exito": True}
+        else: return {"error": "Clave incorrecta", "exito": False}
     except Exception as e: 
-        print(f"Error validando: {e}")
+        await db.rollback()
         return {"error": str(e), "exito": False}
 
 @app.post("/viajes/actualizar_estado")
 async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"), {"st": d.nuevo_estado, "vid": d.viaje_id})
+        await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"), {"st": d.nuevo_estado, "vid": d.viaje_id})
+        await db.commit()
         return {"mensaje": "Estado actualizado"}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
 
 @app.post("/viajes/cancelar")
 async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin():
-            st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-            if not st: return {"error": "Viaje no encontrado"}
-            if st == 'cancelado': return {"mensaje": "Ya cancelado"}
-            if st == 'finalizado': return {"error": "No se puede cancelar un viaje finalizado."}
+        st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+        if not st: return {"error": "Viaje no encontrado"}
+        if st == 'cancelado': return {"mensaje": "Ya cancelado"}
+        if st == 'finalizado': return {"error": "No se puede cancelar un viaje finalizado."}
 
-            await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
+        await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
+        await db.commit()
         return {"mensaje": "Viaje cancelado correctamente"}
     except Exception as e: 
+        await db.rollback()
         print(f"Error cancelando: {e}")
         return {"error": f"Error interno: {str(e)}"}
 
@@ -422,16 +398,33 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
         """)
         v = (await db.execute(query, {"vid": viaje_id})).fetchone()
         if v:
-            return {"estado": v.estado, "clave_seguridad": v.clave_seguridad, "origen": {"lat": v.origen_lat, "lng": v.origen_lng}, "destino": {"lat": v.destino_lat, "lng": v.destino_lng}, "conductor": {"nombre": v.nombre_conductor, "placa": v.placa, "modelo": v.modelo, "color": v.color, "telefono": v.telefono, "lat": v.conductor_lat, "lng": v.conductor_lng} if v.conductor_id else None}
+            return {
+                "estado": v.estado,
+                "clave_seguridad": v.clave_seguridad,
+                "origen": {"lat": v.origen_lat, "lng": v.origen_lng},
+                "destino": {"lat": v.destino_lat, "lng": v.destino_lng},
+                "conductor": {
+                    "nombre": v.nombre_conductor,
+                    "placa": v.placa,
+                    "modelo": v.modelo,
+                    "color": v.color,
+                    "telefono": v.telefono,
+                    "lat": v.conductor_lat,
+                    "lng": v.conductor_lng
+                } if v.conductor_id else None
+            }
         return {"error": "No encontrado"}
     except Exception as e: return {"error": str(e)}
 
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
+        await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
+        await db.commit()
         return {"mensaje": "Guardado"}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
 
 @app.get("/contactos/listar/{uid}")
 async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
@@ -441,35 +434,40 @@ async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
 @app.put("/contactos/editar/{cid}")
 async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
+        await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
+        await db.commit()
         return {"mensaje": "Actualizado"}
     except: return {"error": "Error"}
 
 @app.delete("/contactos/eliminar/{cid}")
 async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
+        await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
+        await db.commit()
         return {"mensaje": "Eliminado"}
     except: return {"error": "Error"}
 
 @app.post("/sos/activar")
 async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
+        await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
+        await db.commit()
         return {"mensaje": "Alerta registrada"}
     except: return {"error": "Error"}
 
 @app.post("/conductores/ubicacion")
 async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
+        await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
+        await db.commit()
         return {"mensaje": "Ubicación OK"}
     except: return {"error": "Error"}
 
 @app.post("/conductores/estado")
 async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
-        async with db.begin(): await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
+        await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
+        await db.commit()
         return {"mensaje": "Estado OK"}
     except: return {"error": "Error"}
 
@@ -492,5 +490,3 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
