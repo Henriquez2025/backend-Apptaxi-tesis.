@@ -2,12 +2,14 @@ fastapi
 uvicorn
 sqlalchemy
 asyncpg
+geoalchemy2
 pydantic
 sqladmin
+python-multipart
+requests
 passlib
 bcrypt
 email-validator
-python-multipart
 itsdangerous
 jinja2
 httpx
