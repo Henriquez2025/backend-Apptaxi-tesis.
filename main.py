@@ -17,41 +17,35 @@ from geoalchemy2 import Geometry
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
-# IMPORTANTE: Contraseña  de la DB Supabase
-DB_PASSWORD = "XYZ*147258369*XYZ" 
+DB_PASSWORD = "XYZ*147258369*XYZ"  # <--- ¡VERIFICA QUE ESTA SEA CORRECTA!
 
-SUPABASE_USER = f"postgres.{PROJECT_ID}"
-SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
-SUPABASE_PORT = "6543"
+# Configuración de Conexión Directa (Puerto 5432)
+SUPABASE_USER = "postgres" 
+SUPABASE_HOST = f"db.{PROJECT_ID}.supabase.co"
+SUPABASE_PORT = "5432"
 SUPABASE_DB   = "postgres"
 
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
+CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
 
-# Detección de entorno
-if os.getenv("DATABASE_URL"):
-    url_env = os.getenv("DATABASE_URL")
-    if url_env.startswith("postgres://"):
-        url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif url_env.startswith("postgresql://"):
-        url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
-    DATABASE_URL = url_env
-else:
-    DATABASE_URL = CLOUD_DATABASE_URL
+# --- MODIFICACIÓN DE DEBUG: FORZAR URL DEL CÓDIGO ---
+# Ignoramos la variable de entorno de Render temporalmente para asegurar 
+# que estamos usando la conexión directa y no la del Pooler viejo.
+print(f"--- DEBUG: Forzando conexión a {SUPABASE_HOST} (Puerto 5432) ---")
+DATABASE_URL = CLOUD_DATABASE_URL 
 
-# Inicialización del Motor con Debug
-print(f"--- Conectando a DB: {DATABASE_URL.split('@')[-1]} ---") # Log seguro (sin pass)
-
+# Inicialización del Motor
 engine = None
 try:
     engine = create_async_engine(
         DATABASE_URL,
-        echo=False, # Cambiar a True para ver SQL en logs
-        pool_pre_ping=True
+        echo=False,
+        pool_pre_ping=True,
+        connect_args={"server_settings": {"jit": "off"}, "command_timeout": 60}
     )
 except Exception as e:
-    print(f"FATAL ERROR: No se pudo crear el motor de base de datos.\nDetalle: {e}")
-    # Permitimos continuar para ver logs, pero la app fallará al usar DB.
+    print(f"FATAL: Error inicializando engine de DB: {e}")
+    pass 
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
@@ -64,7 +58,7 @@ PALABRAS_CLAVE = [
 ]
 
 # -----------------------------------------------------------------------------
-# MODELOS (TABLAS)
+# MODELOS
 # -----------------------------------------------------------------------------
 
 class Usuario(Base):
@@ -227,19 +221,18 @@ if engine:
     admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
 
 async def get_db():
-    if not engine: raise HTTPException(status_code=500, detail="Database error: Engine not initialized")
+    if not engine: raise HTTPException(status_code=500, detail="Database engine not initialized")
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
 # ENDPOINTS
 # -----------------------------------------------------------------------------
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Running (v22.0 - Debug Mode)."}
+def leer_raiz(): return {"mensaje": "API Taxi Running (v24.0 - Force Direct)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Consulta segura
         res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
         user = res.fetchone()
         
@@ -255,13 +248,12 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
                 res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
                 if res_cond: nombre_real = res_cond.nom_apell
         except Exception as e:
-            print(f"Advertencia: No se pudo obtener nombre detallado: {e}")
+            print(f"Advertencia nombre: {e}")
 
         return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
     except Exception as e:
-        # AQUI CAPTURAMOS EL ERROR REAL DE SUPABASE
-        print(f"CRITICAL ERROR EN LOGIN: {e}")
-        return {"error": f"Error interno de base de datos: {str(e)}"}
+        print(f"LOGIN ERROR: {e}")
+        return {"error": f"Error interno BD: {str(e)}"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
@@ -360,7 +352,6 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
         return {"error": "No encontrado"}
     except Exception as e: return {"error": str(e)}
 
-# --- ENDPOINTS RESTANTES (CONTACTOS, SOS, GEO) SE MANTIENEN IGUAL (RESUMIDOS PARA BREVEDAD PERO FUNCIONALES) ---
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
     try:
