@@ -20,7 +20,6 @@ from geoalchemy2 import Geometry
 # CONFIGURACIÓN DE INFRAESTRUCTURA DE BASE DE DATOS
 # -----------------------------------------------------------------------------
 
-# Credenciales de acceso al cluster de base de datos (Supabase)
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
@@ -137,7 +136,7 @@ class Viaje(Base):
     origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     clave_seguridad = Column(String, nullable=True)
-    fecha_creacion = Column(DateTime(timezone=True), server_default=func.now()) # Agregamos fecha para filtrar viejos
+    fecha_creacion = Column(DateTime(timezone=True), server_default=func.now())
     
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
@@ -215,7 +214,7 @@ async def get_db():
 # -----------------------------------------------------------------------------
 
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Funcionando (v15.0 - Conductor Cancel)."}
+def leer_raiz(): return {"mensaje": "API Taxi Funcionando (v16.0 - Full Cancel)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -293,7 +292,6 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
     try:
-        # Filtrar viajes pendientes recientes (últimos 30 minutos por ejemplo) para no saturar
         query = text("""
             SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, 
                    v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng, 
@@ -305,7 +303,6 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
             LIMIT 50
         """)
         res = await db.execute(query)
-        # Retornamos fecha en string ISO para calcular el TTL en frontend
         return [{
             "id": v.id, "origen": v.origen, "destino": v.destino, "tarifa": v.tarifa, 
             "estado": v.estado, "cliente": v.nom_apell or "Cliente", 
@@ -319,7 +316,6 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            # Validación simple para no tomar viajes ya cancelados
             estado = await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
             st = estado.scalar()
             if st != 'pendiente':
@@ -352,7 +348,7 @@ async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depe
 
 @app.post("/viajes/cancelar")
 async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Cancelar viaje. Funciona para pasajeros y conductores (si aún no inicia)."""
+    """Permite cancelar viajes pendientes, aceptados o en curso."""
     try:
         async with db.begin():
             res = await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
@@ -360,16 +356,18 @@ async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get
             
             if not estado_actual: return {"error": "Viaje no encontrado"}
             
-            # Si el viaje ya inició, es complejo cancelar, pero permitimos 'finalizar' como cancelación si es emergencia
-            if estado_actual == 'en_curso':
-                 return {"error": "Viaje en curso. Finalícelo en lugar de cancelar."}
+            if estado_actual == 'cancelado':
+                 return {"mensaje": "El viaje ya estaba cancelado."} # Idempotencia
                  
-            if estado_actual == 'finalizado' or estado_actual == 'cancelado':
-                 return {"error": "Viaje ya cerrado."}
+            if estado_actual == 'finalizado':
+                 return {"error": "No se puede cancelar un viaje finalizado."}
 
+            # Permitimos cancelar 'pendiente', 'aceptado' Y 'en_curso'
             await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
         return {"mensaje": "Viaje cancelado correctamente"}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: 
+        print(f"Error cancelando: {e}")
+        return {"error": f"Error interno: {str(e)}"}
 
 @app.get("/viajes/{viaje_id}")
 async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
