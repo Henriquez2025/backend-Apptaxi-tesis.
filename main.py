@@ -356,13 +356,32 @@ async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/viajes/validar_inicio")
 async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        real = (await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if not real: return {"error": "Datos no encontrados", "exito": False}
-        if d.clave_ingresada.upper().strip() == real:
-            async with db.begin(): await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
-            return {"mensaje": "OK", "exito": True}
-        else: return {"error": "Clave incorrecta", "exito": False}
-    except Exception as e: return {"error": str(e), "exito": False}
+        # Buscamos la clave real
+        res = await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
+        clave_real = res.scalar()
+        
+        if not clave_real:
+             return {"error": "Viaje no encontrado o sin clave", "exito": False}
+             
+        # Limpieza estricta para comparación
+        entrada_limpia = d.clave_ingresada.strip().upper()
+        real_limpia = clave_real.strip().upper()
+
+        # DEBUG LOG (Verás esto en la consola de Render)
+        print(f"--- VALIDANDO CLAVE ---")
+        print(f"Recibida: '{entrada_limpia}'")
+        print(f"Esperada: '{real_limpia}'")
+        
+        if entrada_limpia == real_limpia:
+            async with db.begin():
+                await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
+            return {"mensaje": "Clave correcta. Viaje iniciado.", "exito": True}
+        else:
+            return {"error": f"Clave incorrecta (Esperaba: {real_limpia})", "exito": False}
+            
+    except Exception as e: 
+        print(f"Error validando: {e}")
+        return {"error": str(e), "exito": False}
 
 @app.post("/viajes/actualizar_estado")
 async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depends(get_db)):
@@ -473,3 +492,4 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
