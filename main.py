@@ -1,7 +1,6 @@
-# Importaciones estándar y de terceros
 import os
 import urllib.parse
-import random  # <--- NUEVO: Para generar palabras aleatorias
+import random
 from datetime import date, datetime
 from typing import Optional, List
 
@@ -16,7 +15,7 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# ... (CONFIGURACIÓN DE DATABASE - IGUAL QUE ANTES) ...
+# Configuración de conexión a Base de Datos (Supabase/PostgreSQL)
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
@@ -35,7 +34,7 @@ engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-# --- LISTA DE PALABRAS DE SEGURIDAD ---
+# Diccionario de palabras para validación de viajes
 PALABRAS_CLAVE = [
     "SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", 
     "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", 
@@ -44,10 +43,9 @@ PALABRAS_CLAVE = [
 ]
 
 # -----------------------------------------------------------------------------
-# DEFINICIÓN DE MODELOS ORM
+# Definición de Modelos (Tablas)
 # -----------------------------------------------------------------------------
 
-# ... (Modelos Usuario, Cliente, Vehiculo, Conductor, Admin, Emergencia, Alerta IGUALES) ...
 class Usuario(Base):
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True)
@@ -118,7 +116,6 @@ class Alerta(Base):
     fecha = Column(DateTime(timezone=True), server_default=func.now())
     usuario = relationship("Usuario")
 
-# --- MODELO VIAJE MODIFICADO (Agregamos clave_seguridad) ---
 class Viaje(Base):
     __tablename__ = "viajes"
     id = Column(Integer, primary_key=True)
@@ -134,15 +131,13 @@ class Viaje(Base):
     destino_lng = Column(Float, nullable=True)
     origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
-    
-    # NUEVA COLUMNA DE SEGURIDAD
     clave_seguridad = Column(String, nullable=True) 
     
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
 # -----------------------------------------------------------------------------
-# DTOs
+# Esquemas de Validación (DTOs)
 # -----------------------------------------------------------------------------
 class LoginRequest(BaseModel):
     email: str; password: str
@@ -184,19 +179,18 @@ class EstadoViajeRequest(BaseModel):
     viaje_id: int
     nuevo_estado: str
 
-# NUEVO DTO PARA VALIDAR CLAVE
 class IniciarViajeRequest(BaseModel):
     viaje_id: int
     clave_ingresada: str
 
 # -----------------------------------------------------------------------------
-# APP & ADMIN
+# Configuración del Servidor y Admin
 # -----------------------------------------------------------------------------
 app = FastAPI(title="Taxi App API", description="API REST para gestión de transporte urbano.")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 admin = Admin(app, engine, title="Taxi Admin")
 
-# Vistas Admin (Simplificadas para el ejemplo)
+# Registro de vistas en panel admin
 admin.add_view(ModelView(Usuario)); admin.add_view(ModelView(Cliente))
 admin.add_view(ModelView(Conductor)); admin.add_view(ModelView(Vehiculo))
 admin.add_view(ModelView(Viaje)); admin.add_view(ModelView(Emergencia))
@@ -206,11 +200,11 @@ async def get_db():
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS
+# Endpoints: Autenticación
 # -----------------------------------------------------------------------------
 
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Funcionando con Seguridad (Palabra Clave)."}
+def leer_raiz(): return {"mensaje": "API Taxi Service Running."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -232,7 +226,6 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
-    # ... (Misma lógica que antes)
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
@@ -247,7 +240,6 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
 
 @app.post("/registrar_conductor")
 async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
-    
     try:
         async with db.begin():
             if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
@@ -258,18 +250,20 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
         return {"mensaje": "Conductor registrado", "id": uid}
     except Exception as e: return {"error": str(e)}
 
-# --- SOLICITUD DE VIAJE CON GENERACIÓN DE CLAVE ---
+# -----------------------------------------------------------------------------
+# Endpoints: Gestión de Viajes
+# -----------------------------------------------------------------------------
+
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            # 1. Generar palabra aleatoria
+            # Generación de palabra clave para validación presencial
             clave_generada = random.choice(PALABRAS_CLAVE)
 
             geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
             geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
             
-            # 2. Insertar con clave_seguridad
             query = text(f"""
                 INSERT INTO viajes (
                     cliente_id, origen, destino, tarifa, estado, 
@@ -289,7 +283,6 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
             })
             vid = res.scalar()
         
-        # Devolvemos la clave para que el cliente la vea inmediatamente
         return {"mensaje": "Viaje solicitado", "id_viaje": vid, "clave": clave_generada}
     except Exception as e: return {"error": str(e)}
 
@@ -314,25 +307,21 @@ async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
         return {"mensaje": "Viaje aceptado"}
     except Exception as e: return {"error": str(e)}
 
-# --- NUEVO ENDPOINT: VALIDAR INICIO DE VIAJE (SEGURIDAD) ---
 @app.post("/viajes/validar_inicio")
 async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Buscamos la clave real del viaje
         res = await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
         clave_real = res.scalar()
         
         if not clave_real:
-             return {"error": "Viaje no encontrado o sin clave", "exito": False}
+             return {"error": "Datos no encontrados", "exito": False}
              
-        # Comparamos (evitamos error por mayúsculas/minúsculas)
         if d.clave_ingresada.upper().strip() == clave_real:
-            # Si coincide, iniciamos el viaje
             async with db.begin():
                 await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
-            return {"mensaje": "Clave correcta. Viaje iniciado.", "exito": True}
+            return {"mensaje": "Validación exitosa", "exito": True}
         else:
-            return {"error": "Palabra clave incorrecta", "exito": False}
+            return {"error": "Clave incorrecta", "exito": False}
             
     except Exception as e: return {"error": str(e), "exito": False}
 
@@ -341,13 +330,12 @@ async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depe
     try:
         async with db.begin():
             await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"), {"st": d.nuevo_estado, "vid": d.viaje_id})
-        return {"mensaje": f"Viaje {d.nuevo_estado}"}
+        return {"mensaje": f"Estado actualizado: {d.nuevo_estado}"}
     except Exception as e: return {"error": str(e)}
 
 @app.get("/viajes/{viaje_id}")
 async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        # AGREGAMOS CLAVE_SEGURIDAD AL SELECT
         query = text("""
             SELECT v.estado, v.conductor_id, v.clave_seguridad, 
                    v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
@@ -365,7 +353,7 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
         if v:
             return {
                 "estado": v.estado,
-                "clave_seguridad": v.clave_seguridad, # <--- ENVIAMOS LA CLAVE
+                "clave_seguridad": v.clave_seguridad,
                 "origen": {"lat": v.origen_lat, "lng": v.origen_lng},
                 "destino": {"lat": v.destino_lat, "lng": v.destino_lng},
                 "conductor": {
@@ -381,7 +369,10 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
         return {"error": "No encontrado"}
     except Exception as e: return {"error": str(e)}
 
-# ... (Endpoints de Contactos, SOS, Conductores) ...
+# -----------------------------------------------------------------------------
+# Endpoints: Contactos, Alertas y Conductores
+# -----------------------------------------------------------------------------
+
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
     try:
