@@ -1,4 +1,3 @@
-# ... (Importaciones y Configuración de BD igual que antes) ...
 # Importaciones estándar y de terceros
 import os
 import urllib.parse
@@ -504,3 +503,4 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
