@@ -15,7 +15,7 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
+# --- CONFIGURACIÓN DE INFRAESTRUCTURA DB ---
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
 DB_PASSWORD = "XYZ*147258369*XYZ"
 
@@ -26,8 +26,9 @@ SUPABASE_PORT = "6543"
 SUPABASE_DB   = "postgres"
 
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?ssl=require&prepared_statement_cache_size=0"
+CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?ssl=require"
 
+# Selección de entorno
 if os.getenv("DATABASE_URL"):
     url_env = os.getenv("DATABASE_URL")
     if url_env.startswith("postgres://"):
@@ -39,19 +40,23 @@ if os.getenv("DATABASE_URL"):
 else:
     DATABASE_URL = CLOUD_DATABASE_URL
 
-# Inicialización del Motor
+# Inicialización del Motor SQL
+# FIX PGBOUNCER: statement_cache_size=0 en connect_args
 engine = None
 try:
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
-        connect_args={"server_settings": {"jit": "off"}, "command_timeout": 60}
+        connect_args={
+            "server_settings": {"jit": "off"},
+            "statement_cache_size": 0, # CRÍTICO PARA PGBOUNCER
+            "command_timeout": 60
+        }
     )
 except Exception as e:
     print(f"FATAL: Error inicializando engine DB: {e}")
 
-# expire_on_commit=False es clave para async
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
@@ -224,15 +229,14 @@ async def get_db():
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS API (CORREGIDOS PARA EVITAR 'TRANSACTION ALREADY BEGUN')
+# ENDPOINTS API
 # -----------------------------------------------------------------------------
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Running (v28.0 - Transaction Fix)."}
+def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Statement Cache Off)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Solo lectura, no requiere commit
         res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
         user = res.fetchone()
         
@@ -256,7 +260,6 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Eliminamos 'async with db.begin()' para evitar anidamiento
         if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
         
         uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
@@ -266,7 +269,7 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
             {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
         except: pass
         
-        await db.commit() # Commit manual
+        await db.commit()
         return {"mensaje": "Registrado", "id": uid}
     except Exception as e: 
         await db.rollback()
@@ -378,7 +381,6 @@ async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get
         return {"mensaje": "Viaje cancelado correctamente"}
     except Exception as e: 
         await db.rollback()
-        print(f"Error cancelando: {e}")
         return {"error": f"Error interno: {str(e)}"}
 
 @app.get("/viajes/{viaje_id}")
