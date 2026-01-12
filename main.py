@@ -184,8 +184,7 @@ class ViajeRequest(BaseModel):
     tarifa: float
     origen_lat: Optional[float] = None
     origen_lng: Optional[float] = None
-    destino_lat: Optional[float] = None
-    destino_lng: Optional[float] = None
+    destino_lat: Optional[float] = None; destino_lng: Optional[float] = None
 
 class AceptarViajeRequest(BaseModel):
     viaje_id: int
@@ -196,10 +195,8 @@ class UsuarioRegistroRequest(BaseModel):
     email: str
     password: str
     role: str = "cliente"
-    telefono: Optional[str] = None
-    fecha_nacimiento: Optional[str] = None
-    pais: Optional[str] = None
-    ciudad: Optional[str] = None
+    telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None
+    pais: Optional[str] = None; ciudad: Optional[str] = None
 
 class RegistroConductorRequest(BaseModel):
     nombre: str
@@ -211,33 +208,23 @@ class RegistroConductorRequest(BaseModel):
     vehiculo_marca: str
     vehiculo_modelo: str
     vehiculo_placa: str
-    vehiculo_color: Optional[str] = None
-    vehiculo_anio: Optional[str] = None
-    cedula: Optional[str] = None
-    horario_trabajo: Optional[str] = None
+    vehiculo_color: Optional[str] = None; vehiculo_anio: Optional[str] = None
+    cedula: Optional[str] = None; horario_trabajo: Optional[str] = None
 
 class ContactoRequest(BaseModel):
-    usuario_id: int
-    nombre_contacto: str
-    numero_whatsapp: str
+    usuario_id: int; nombre_contacto: str; numero_whatsapp: str
 
 class ContactoEditRequest(BaseModel):
-    nombre_contacto: str
-    numero_whatsapp: str
+    nombre_contacto: str; numero_whatsapp: str
 
 class AlertaRequest(BaseModel):
-    usuario_id: int
-    ubicacion: str
-    mensaje: str
+    usuario_id: int; ubicacion: str; mensaje: str
 
 class UbicacionConductorRequest(BaseModel):
-    usuario_id: int
-    latitud: float
-    longitud: float
+    usuario_id: int; latitud: float; longitud: float
 
 class EstadoConductorRequest(BaseModel):
-    usuario_id: int
-    activo: bool
+    usuario_id: int; activo: bool
 
 class EstadoViajeRequest(BaseModel):
     viaje_id: int
@@ -257,7 +244,7 @@ class IniciarViajeRequest(BaseModel):
 
 app = FastAPI(title="Taxi App API", description="API REST para gestión de transporte urbano.")
 
-# Configuración CORS: Permitir todo para desarrollo/tesis
+# Configuración CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -269,14 +256,40 @@ app.add_middleware(
 # Panel Administrativo (sqladmin)
 admin = Admin(app, engine, title="Taxi Admin")
 
-# Registro de Vistas en Admin
-admin.add_view(ModelView(Usuario))
-admin.add_view(ModelView(Cliente))
-admin.add_view(ModelView(Conductor))
-admin.add_view(ModelView(Vehiculo))
-admin.add_view(ModelView(Viaje))
-admin.add_view(ModelView(Emergencia))
-admin.add_view(ModelView(Alerta))
+# Definición de Vistas Admin (CORRECTA)
+class UsuarioAdmin(ModelView, model=Usuario):
+    column_list = [Usuario.id, Usuario.email, Usuario.role]
+
+class ClienteAdmin(ModelView, model=Cliente):
+    column_list = [Cliente.id_cliente, Cliente.nom_apell, Cliente.ciudad]
+
+class ConductorAdmin(ModelView, model=Conductor):
+    column_list = [Conductor.id_conductor, Conductor.nom_apell, Conductor.activo]
+
+class VehiculoAdmin(ModelView, model=Vehiculo):
+    column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.modelo]
+
+class ViajeAdmin(ModelView, model=Viaje):
+    column_list = [Viaje.id, Viaje.estado, Viaje.tarifa, Viaje.origen]
+
+class EmergenciaAdmin(ModelView, model=Emergencia):
+    column_list = [Emergencia.id, Emergencia.nombre_contacto]
+
+class AlertaAdmin(ModelView, model=Alerta):
+    column_list = [Alerta.id, Alerta.ubicacion, Alerta.fecha]
+
+class AdministradorAdmin(ModelView, model=Administrador):
+    column_list = [Administrador.id, Administrador.nom_apell]
+
+# Registro de Vistas (CORREGIDO: Usando las clases definidas arriba)
+admin.add_view(UsuarioAdmin)
+admin.add_view(ClienteAdmin)
+admin.add_view(ConductorAdmin)
+admin.add_view(VehiculoAdmin)
+admin.add_view(ViajeAdmin)
+admin.add_view(EmergenciaAdmin)
+admin.add_view(AlertaAdmin)
+admin.add_view(AdministradorAdmin)
 
 # Dependencia para obtener sesión de DB
 async def get_db():
@@ -290,17 +303,15 @@ async def get_db():
 @app.get("/")
 def leer_raiz():
     """Health check."""
-    return {"mensaje": "API Taxi Service Running (vFinal)."}
+    return {"mensaje": "API Taxi Service Running (v17.0 - Admin Fix)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Nota: En producción usar bcrypt.verify, aquí comparamos texto plano por simplicidad del prototipo
         res = await db.execute(text(f"SELECT * FROM usuarios WHERE email='{datos.email}' AND password_hash='{datos.password}'"))
         user = res.fetchone()
         
-        if not user:
-            return {"error": "Credenciales inválidas"}
+        if not user: return {"error": "Credenciales inválidas"}
 
         nombre_real = "Usuario"
         if user.role == 'cliente':
@@ -311,8 +322,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
             if res_cond: nombre_real = res_cond.nom_apell
 
         return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
-    except Exception as e:
-        return {"error": f"Error interno: {str(e)}"}
+    except Exception as e: return {"error": f"Error interno: {str(e)}"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
@@ -329,8 +339,7 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                 {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
             except: pass
         return {"mensaje": "Usuario registrado exitosamente", "id": uid}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 @app.post("/registrar_conductor")
 async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
@@ -348,17 +357,13 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
             {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
             
         return {"mensaje": "Conductor registrado exitosamente", "id": uid}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            # Generar Token de Seguridad
             clave_generada = random.choice(PALABRAS_CLAVE)
-
-            # Convertir coordenadas a geometría PostGIS
             geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
             geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
             
@@ -387,7 +392,6 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
     try:
-        # Solo mostrar pendientes recientes (últimos 30 minutos)
         query = text("""
             SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, 
                    v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng, 
@@ -412,13 +416,8 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
-            # Verificar si sigue disponible
-            estado = await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
-            st = estado.scalar()
-            
-            if st != 'pendiente':
-                return {"error": "El viaje ya no está disponible (fue tomado o cancelado)."}
-
+            st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+            if st != 'pendiente': return {"error": "El viaje ya no está disponible"}
             await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
         return {"mensaje": "Viaje aceptado"}
     except Exception as e: return {"error": str(e)}
@@ -428,16 +427,13 @@ async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depend
     try:
         res = await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
         clave_real = res.scalar()
+        if not clave_real: return {"error": "Datos no encontrados", "exito": False}
         
-        if not clave_real:
-             return {"error": "Datos no encontrados", "exito": False}
-             
         if d.clave_ingresada.upper().strip() == clave_real:
             async with db.begin():
                 await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
             return {"mensaje": "Validación exitosa", "exito": True}
-        else:
-            return {"error": "Clave incorrecta", "exito": False}
+        else: return {"error": "Clave incorrecta", "exito": False}
     except Exception as e: return {"error": str(e), "exito": False}
 
 @app.post("/viajes/actualizar_estado")
@@ -450,26 +446,16 @@ async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depe
 
 @app.post("/viajes/cancelar")
 async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get_db)):
-    """Permite cancelar viajes en estado: pendiente, aceptado y en_curso (emergencia)."""
     try:
         async with db.begin():
             res = await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})
             estado_actual = res.scalar()
             
-            if not estado_actual:
-                return {"error": "Viaje no encontrado"}
-            
-            # Idempotencia: Si ya está cancelado, retornar éxito
-            if estado_actual == 'cancelado':
-                 return {"mensaje": "El viaje ya estaba cancelado."}
-            
-            # Restricción lógica: No cancelar si ya finalizó (ya se cobró)
-            if estado_actual == 'finalizado':
-                 return {"error": "No se puede cancelar un viaje finalizado."}
+            if not estado_actual: return {"error": "Viaje no encontrado"}
+            if estado_actual == 'cancelado': return {"mensaje": "El viaje ya estaba cancelado."}
+            if estado_actual == 'finalizado': return {"error": "No se puede cancelar un viaje finalizado."}
 
-            # Permitimos cancelar en 'pendiente', 'aceptado' y 'en_curso'
             await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
-            
         return {"mensaje": "Viaje cancelado correctamente"}
     except Exception as e: 
         print(f"Error cancelando: {e}")
@@ -490,8 +476,7 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
             LEFT JOIN vehiculos ve ON c.vehiculo_id = ve.id
             WHERE v.id = :vid
         """)
-        res = await db.execute(query, {"vid": viaje_id})
-        v = res.fetchone()
+        v = (await db.execute(query, {"vid": viaje_id})).fetchone()
         if v:
             return {
                 "estado": v.estado,
@@ -510,8 +495,6 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
             }
         return {"error": "No encontrado"}
     except Exception as e: return {"error": str(e)}
-
-# --- SEGURIDAD Y CONTACTOS ---
 
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
