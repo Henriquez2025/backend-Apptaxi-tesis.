@@ -26,10 +26,15 @@ SUPABASE_DB   = "postgres"
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?prepared_statement_cache_size=0"
 
+# Lógica robusta para forzar driver asíncrono
 if os.getenv("DATABASE_URL"):
     url_env = os.getenv("DATABASE_URL")
-    if url_env and url_env.startswith("postgres://"):
+    # Reemplazar esquema para asegurar uso de asyncpg
+    if url_env.startswith("postgres://"):
         url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url_env.startswith("postgresql://"):
+        url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
+    
     DATABASE_URL = url_env
 else:
     DATABASE_URL = CLOUD_DATABASE_URL
@@ -44,9 +49,8 @@ try:
     )
 except Exception as e:
     print(f"FATAL: Error inicializando engine de DB: {e}")
-    # Si falla aquí, engine seguirá siendo None o lanzará error al usarse.
-    # Es preferible que falle el deploy a que arranque roto.
-    raise e
+    # Si falla, imprimimos pero permitimos que el script intente seguir para ver logs
+    pass 
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
@@ -266,7 +270,7 @@ async def get_db():
 # -----------------------------------------------------------------------------
 
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Service Running (v18.0 - Engine Fix)."}
+def leer_raiz(): return {"mensaje": "API Taxi Service Running (v20.0 - Async Fix)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -379,6 +383,7 @@ async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depend
     try:
         real = (await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
         if not real: return {"error": "Datos no encontrados", "exito": False}
+        
         if d.clave_ingresada.upper().strip() == real:
             async with db.begin():
                 await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
