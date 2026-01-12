@@ -15,26 +15,32 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
+# --- CONFIGURACIÓN DE INFRAESTRUCTURA DB ---
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
-DB_PASSWORD = "XYZ*147258369*XYZ"  # <--- ¡VERIFICA QUE ESTA SEA CORRECTA!
+DB_PASSWORD = "XYZ*147258369*XYZ"
 
-# Configuración de Conexión Directa (Puerto 5432)
-SUPABASE_USER = "postgres" 
-SUPABASE_HOST = f"db.{PROJECT_ID}.supabase.co"
-SUPABASE_PORT = "5432"
+# Configuración Connection Pooler (Puerto 6543 - IPv4)
+SUPABASE_USER = f"postgres.{PROJECT_ID}"
+SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
+SUPABASE_PORT = "6543" 
 SUPABASE_DB   = "postgres"
 
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
+CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?ssl=require&prepared_statement_cache_size=0"
 
-# --- MODIFICACIÓN DE DEBUG: FORZAR URL DEL CÓDIGO ---
-# Ignoramos la variable de entorno de Render temporalmente para asegurar 
-# que estamos usando la conexión directa y no la del Pooler viejo.
-print(f"--- DEBUG: Forzando conexión a {SUPABASE_HOST} (Puerto 5432) ---")
-DATABASE_URL = CLOUD_DATABASE_URL 
+# Selección de entorno
+if os.getenv("DATABASE_URL"):
+    url_env = os.getenv("DATABASE_URL")
+    if url_env.startswith("postgres://"):
+        url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url_env.startswith("postgresql://"):
+        url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # Forzar uso de Pooler si Render falla con IPv6
+    DATABASE_URL = CLOUD_DATABASE_URL 
+else:
+    DATABASE_URL = CLOUD_DATABASE_URL
 
-# Inicialización del Motor
+# Inicialización del Motor SQL
 engine = None
 try:
     engine = create_async_engine(
@@ -44,23 +50,16 @@ try:
         connect_args={"server_settings": {"jit": "off"}, "command_timeout": 60}
     )
 except Exception as e:
-    print(f"FATAL: Error inicializando engine de DB: {e}")
-    pass 
+    print(f"FATAL: Error inicializando engine DB: {e}")
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-PALABRAS_CLAVE = [
-    "SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", 
-    "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", 
-    "ROCK", "MENTA", "COCO", "LIMA", "ALFA", "BETA", "GAMA", 
-    "RISA", "VIDA", "ARBOL", "CIEGO", "LINDO", "PIANO"
-]
+PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
 
 # -----------------------------------------------------------------------------
-# MODELOS
+# MODELOS ORM
 # -----------------------------------------------------------------------------
-
 class Usuario(Base):
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True)
@@ -200,7 +199,7 @@ class IniciarViajeRequest(BaseModel):
     viaje_id: int; clave_ingresada: str
 
 # -----------------------------------------------------------------------------
-# APP & ADMIN
+# CONFIGURACIÓN APP & ADMIN
 # -----------------------------------------------------------------------------
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -221,14 +220,14 @@ if engine:
     admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
 
 async def get_db():
-    if not engine: raise HTTPException(status_code=500, detail="Database engine not initialized")
+    if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS
+# ENDPOINTS API
 # -----------------------------------------------------------------------------
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Running (v24.0 - Force Direct)."}
+def leer_raiz(): return {"mensaje": "API Taxi Running (v27.0 - Stable)."}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -247,13 +246,12 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
             elif user.role == 'conductor':
                 res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
                 if res_cond: nombre_real = res_cond.nom_apell
-        except Exception as e:
-            print(f"Advertencia nombre: {e}")
+        except Exception: pass
 
         return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
     except Exception as e:
         print(f"LOGIN ERROR: {e}")
-        return {"error": f"Error interno BD: {str(e)}"}
+        return {"error": f"Error interno: {str(e)}"}
 
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
@@ -409,3 +407,6 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
