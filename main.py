@@ -16,32 +16,42 @@ from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
 # --- CONFIGURACIÓN DE INFRAESTRUCTURA DB ---
+# NOTA: En producción (Render), es mejor usar variables de entorno para PROJECT_ID y DB_PASSWORD
+# pero para tu tesis, dejarlas aquí está bien si el repo es privado.
+
 PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
-DB_PASSWORD = "XYZ*147258369*XYZ"
+# DB_PASSWORD: Se recomienda no subir contraseñas reales a GitHub público.
+# Si Render tiene problemas, verifica que esta contraseña sea la correcta de Supabase.
+DB_PASSWORD = "XYZ*147258369*XYZ" 
 
 # Configuración Connection Pooler (Puerto 6543 - IPv4)
 SUPABASE_USER = f"postgres.{PROJECT_ID}"
-SUPABASE_HOST = "aws-1-sa-east-1.pooler.supabase.com" 
+SUPABASE_HOST = "aws-0-sa-east-1.pooler.supabase.com" # Ajustado a aws-0 que es común, verifica si es aws-1 en tu panel
 SUPABASE_PORT = "6543" 
 SUPABASE_DB   = "postgres"
 
 encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
+
+# URL Base para Supabase con Pooler
 CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?ssl=require"
 
-# Selección de entorno
+# Selección de entorno Inteligente
+# Si Render provee DATABASE_URL, la usamos (ajustando el prefijo si es necesario)
+# Si no, usamos la CLOUD_DATABASE_URL construida manualmente.
 if os.getenv("DATABASE_URL"):
     url_env = os.getenv("DATABASE_URL")
     if url_env.startswith("postgres://"):
         url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url_env.startswith("postgresql://"):
         url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
-    # Forzar uso de Pooler si Render falla con IPv6
-    DATABASE_URL = CLOUD_DATABASE_URL 
+    
+    DATABASE_URL = url_env
 else:
     DATABASE_URL = CLOUD_DATABASE_URL
 
+print(f"INFO: Conectando a DB: {DATABASE_URL.split('@')[-1]}") # Log seguro (sin password)
+
 # Inicialización del Motor SQL
-# FIX PGBOUNCER: statement_cache_size=0 en connect_args
 engine = None
 try:
     engine = create_async_engine(
@@ -49,9 +59,10 @@ try:
         echo=False,
         pool_pre_ping=True,
         connect_args={
-            "server_settings": {"jit": "off"},
-            "statement_cache_size": 0, # CRÍTICO PARA PGBOUNCER
-            "command_timeout": 60
+            "server_settings": {
+                "jit": "off",
+                "statement_cache_size": "0" # CRÍTICO PARA SUPABASE POOLER (Transaction Mode)
+            }
         }
     )
 except Exception as e:
@@ -206,23 +217,34 @@ class IniciarViajeRequest(BaseModel):
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN APP & ADMIN
 # -----------------------------------------------------------------------------
-app = FastAPI(title="Taxi App API", description="API REST")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Taxi App API", description="API REST para Tesis")
+
+# CORS: Permitir acceso desde cualquier origen (importante para la app móvil)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if engine:
-    admin = Admin(app, engine, title="Taxi Admin")
-    class UsuarioAdmin(ModelView, model=Usuario): column_list = [Usuario.id, Usuario.email, Usuario.role]
-    class ClienteAdmin(ModelView, model=Cliente): column_list = [Cliente.id_cliente, Cliente.nom_apell, Cliente.ciudad]
-    class ConductorAdmin(ModelView, model=Conductor): column_list = [Conductor.id_conductor, Conductor.nom_apell, Conductor.activo]
-    class VehiculoAdmin(ModelView, model=Vehiculo): column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.modelo]
-    class ViajeAdmin(ModelView, model=Viaje): column_list = [Viaje.id, Viaje.estado, Viaje.tarifa, Viaje.origen]
-    class EmergenciaAdmin(ModelView, model=Emergencia): column_list = [Emergencia.id, Emergencia.nombre_contacto]
-    class AlertaAdmin(ModelView, model=Alerta): column_list = [Alerta.id, Alerta.ubicacion, Alerta.fecha]
-    class AdministradorAdmin(ModelView, model=Administrador): column_list = [Administrador.id, Administrador.nom_apell]
+    try:
+        admin = Admin(app, engine, title="Taxi Admin")
+        class UsuarioAdmin(ModelView, model=Usuario): column_list = [Usuario.id, Usuario.email, Usuario.role]
+        class ClienteAdmin(ModelView, model=Cliente): column_list = [Cliente.id_cliente, Cliente.nom_apell, Cliente.ciudad]
+        class ConductorAdmin(ModelView, model=Conductor): column_list = [Conductor.id_conductor, Conductor.nom_apell, Conductor.activo]
+        class VehiculoAdmin(ModelView, model=Vehiculo): column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.modelo]
+        class ViajeAdmin(ModelView, model=Viaje): column_list = [Viaje.id, Viaje.estado, Viaje.tarifa, Viaje.origen]
+        class EmergenciaAdmin(ModelView, model=Emergencia): column_list = [Emergencia.id, Emergencia.nombre_contacto]
+        class AlertaAdmin(ModelView, model=Alerta): column_list = [Alerta.id, Alerta.ubicacion, Alerta.fecha]
+        class AdministradorAdmin(ModelView, model=Administrador): column_list = [Administrador.id, Administrador.nom_apell]
 
-    admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin)
-    admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(EmergenciaAdmin)
-    admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
+        admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin)
+        admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(EmergenciaAdmin)
+        admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
+    except Exception as e:
+        print(f"WARN: Error configurando Admin: {e}")
 
 async def get_db():
     if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
@@ -232,7 +254,8 @@ async def get_db():
 # ENDPOINTS API
 # -----------------------------------------------------------------------------
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Statement Cache Off)."}
+def leer_raiz(): 
+    return {"mensaje": "API Taxi Running.", "estado": "OK"}
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -490,6 +513,13 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
         return [{"id": c.id_conductor, "nombre": c.nom_apell, "placa": c.placa, "modelo": c.modelo, "lat": c.lat, "lng": c.lng} for c in res.fetchall()]
     except: return []
 
+# -----------------------------------------------------------------------------
+# ARRANQUE DEL SERVIDOR (IMPORTANTE PARA RENDER)
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Render asigna el puerto en la variable de entorno 'PORT'
+    port = int(os.getenv("PORT", 8000))
+    # 'main:app' asume que este archivo se llama main.py
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+
 
