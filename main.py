@@ -1,641 +1,524 @@
-// **formulario de registro
-import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
-import 'dart:io';
-import '../core/validators.dart';
-import '../widgets/document_row.dart';
-//import 'package:app_tesis_ug/widgets/custom_button.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import os
+import urllib.parse
+import random
+from datetime import date, datetime, timedelta
+from typing import Optional, List
 
-class RegisterForm extends StatefulWidget {
-  const RegisterForm({super.key});
+import uvicorn
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.sql import func
+from sqladmin import Admin, ModelView
+from geoalchemy2 import Geometry
 
-  @override
-  State<RegisterForm> createState() => _RegisterFormState();
-}
+# --- CONFIGURACIÓN DE INFRAESTRUCTURA DB ---
+# NOTA: En producción (Render), es mejor usar variables de entorno para PROJECT_ID y DB_PASSWORD
+# pero para tu tesis, dejarlas aquí está bien si el repo es privado.
 
-class _RegisterFormState extends State<RegisterForm> {
-  final PageController _pageController = PageController();
-  int _currentPage = 0;
+PROJECT_ID = "vjhggvxkhowlnbppuiuw" 
+# DB_PASSWORD: Se recomienda no subir contraseñas reales a GitHub público.
+# Si Render tiene problemas, verifica que esta contraseña sea la correcta de Supabase.
+DB_PASSWORD = "XYZ*147258369*XYZ" 
 
-  final _nameController = TextEditingController();
-  final _lastnameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _password2Controller = TextEditingController();
+# Configuración Connection Pooler (Puerto 6543 - IPv4)
+SUPABASE_USER = f"postgres.{PROJECT_ID}"
+SUPABASE_HOST = "aws-0-sa-east-1.pooler.supabase.com" # Ajustado a aws-0 que es común, verifica si es aws-1 en tu panel
+SUPABASE_PORT = "6543" 
+SUPABASE_DB   = "postgres"
 
-  String _country = 'Ecuador';
-  String _city = 'Guayaquil';
-  DateTime? _birthDate;
+encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
 
-  final String _role = 'Cliente';
+# URL Base para Supabase con Pooler
+CLOUD_DATABASE_URL = f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}?ssl=require"
 
-  File? _cedulaFrontFile;
-  File? _cedulaBackFile;
-  File? _selfieFile;
-  final ImagePicker _picker = ImagePicker();
+# Selección de entorno Inteligente
+# Si Render provee DATABASE_URL, la usamos (ajustando el prefijo si es necesario)
+# Si no, usamos la CLOUD_DATABASE_URL construida manualmente.
+if os.getenv("DATABASE_URL"):
+    url_env = os.getenv("DATABASE_URL")
+    if url_env.startswith("postgres://"):
+        url_env = url_env.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url_env.startswith("postgresql://"):
+        url_env = url_env.replace("postgresql://", "postgresql+asyncpg://", 1)
+    
+    DATABASE_URL = url_env
+else:
+    DATABASE_URL = CLOUD_DATABASE_URL
 
-  // **Variables para controlar la visibilidad de la contraseña
-  bool _isPasswordVisible = false;
-  bool _isPassword2Visible = false;
+print(f"INFO: Conectando a DB: {DATABASE_URL.split('@')[-1]}") # Log seguro (sin password)
 
-  final Map<String, List<String>> _citiesByCountry = {
-    'Ecuador': ['Guayaquil', 'Quito', 'Cuenca', 'Machala'],
-    'Estados Unidos': ['New York', 'Los Angeles', 'Miami'],
-    'España': ['Madrid', 'Barcelona', 'Valencia'],
-    'México': ['Ciudad de México', 'Guadalajara', 'Monterrey'],
-    'Alemania': ['Berlín', 'Múnich', 'Hamburgo'],
-    'Inglaterra': ['Londres', 'Manchester', 'Birmingham'],
-    'Turquía': ['Estambul', 'Ankara', 'Esmirna'],
-    'Corea': ['Seúl', 'Busan', 'Incheon'],
-    'Argentina': ['Buenos Aires', 'Córdoba', 'Rosario'],
-    'Colombia': ['Bogotá', 'Medellín', 'Cali'],
-    'Perú': ['Lima', 'Arequipa', 'Cusco'],
-  };
-
-  final Map<String, String> _countryPhoneCodes = {
-    'Ecuador': '+593',
-    'Estados Unidos': '+1',
-    'España': '+34',
-    'México': '+52',
-    'Alemania': '+49',
-    'Inglaterra': '+44',
-    'Turquía': '+90',
-    'Corea': '+82',
-    'Argentina': '+54',
-    'Colombia': '+57',
-    'Perú': '+51',
-  };
-
-  // **Función que obtiene la lada del país seleccionado
-  String _getCountryPhoneCode(String country) {
-    return _countryPhoneCodes[country] ??
-        ''; // ?Si no existe el país, retorna un string vacío
-  }
-
-  // **Función para seleccionar una imagen desde la galería
-  Future<void> _pickImageFile(Function(File) onPicked) async {
-    final picked = await _picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 85,
-    );
-    if (picked != null) {
-      onPicked(File(picked.path));
-      setState(() {});
-    }
-  }
-
-  // !Validadores simples
-  bool _validateEmail(String email) => validateEmail(email);
-  String? _validatePassword(String password) => validatePassword(password);
-  bool _validatePhone(String phone) => validatePhone(phone);
-
-  // **Avanzar a la siguiente página
-  void _nextPage() {
-    FocusScope.of(context).unfocus();
-    if (_currentPage < 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.ease,
-      );
-    }
-  }
-
-  // **Regresar a la página anterior
-  void _prevPage() {
-    FocusScope.of(context).unfocus();
-    if (_currentPage > 0) {
-      _pageController.previousPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.ease,
-      );
-    }
-  }
-
-  // **Enviar el formulario
-  // El botón "Registrarse" llama a esta función
-  void _submitFormularioApi() {
-    final name = _nameController.text.trim();
-    final lastname = _lastnameController.text.trim();
-    final email = _emailController.text.trim();
-    final pwd = _passwordController.text;
-    final pwd2 = _password2Controller.text;
-    final phoneLocal = _phoneController.text.trim();
-
-    //** Validaciones generales
-    if (name.isEmpty || lastname.isEmpty) {
-      _showMessage('Completa nombres y apellidos');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    if (!_validateEmail(email)) {
-      _showMessage('Correo inválido');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    final pwdError = _validatePassword(pwd);
-    if (pwdError != null) {
-      _showMessage('Contraseña inválida: $pwdError');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    if (pwd != pwd2) {
-      _showMessage('Las contraseñas no coinciden');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    if (pwd.length > 70) {
-      _showMessage('La contraseña es demasiado larga (máx. 70 caracteres)');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    if (!_validatePhone(phoneLocal)) {
-      _showMessage('Teléfono inválido');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    // **Validaciones adicionales según el rol
-    if (_country.isEmpty || _city.isEmpty || _birthDate == null) {
-      _showMessage('Selecciona país, ciudad y fecha de nacimiento');
-      _pageController.jumpToPage(0);
-      return;
-    }
-
-    if (_cedulaFrontFile == null ||
-        _cedulaBackFile == null ||
-        _selfieFile == null) {
-      _showMessage('Sube identificacion y selfie ');
-      _pageController.jumpToPage(1);
-      return;
-    }
-
-    //** BD FECH en formato que API entiende
-    String fechaNacimientoFormateada = _birthDate != null
-        ? _birthDate!.toIso8601String().split('T')[0]
-        : "";
-
-    String fullphone = '${_getCountryPhoneCode(_country)}$phoneLocal';
-
-    // ** BD Creamos el "cuerpo" del JSON
-    Map<String, dynamic> body = {
-      "nombre": "$name $lastname",
-      "email": email,
-      "password": pwd,
-      "role": _role,
-      "fecha_nacimiento": fechaNacimientoFormateada,
-      "telefono": fullphone,
-      "pais": _country,
-      "ciudad": _city,
-    };
-
-    // --- 3. ENVIAMOS A LA API ---
-    _llamarApiParaRegistrar(body);
-  }
-
-  // Esta es la función de red que llamamos desde _submitFormularioA_API
-  Future<void> _llamarApiParaRegistrar(Map<String, dynamic> body) async {
-    // Usamos la URL correcta (127.0.0.1 es lo mismo que localhost)
-    const String apiUrl = 'http://127.0.0.1:8000/registrar_usuario';
-
-    try {
-      final response = await http.post(
-        Uri.parse(apiUrl),
-        headers: {'Content-Type': 'application/json; charset=UTF-8'},
-        // Convertimos el MAPA (body) a un string JSON
-        body: jsonEncode(body),
-      );
-
-      // 4. Manejamos la respuesta
-      if (response.statusCode == 200) {
-        // 200 = OK. El usuario se creó.
-        final data = jsonDecode(response.body);
-        debugPrint('¡Éxito! Respuesta: $data');
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('¡Registro exitoso! ID: ${data['nuevo_id']}'),
-            ),
-          );
+# Inicialización del Motor SQL
+engine = None
+try:
+    engine = create_async_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,
+        connect_args={
+            "server_settings": {
+                "jit": "off",
+                "statement_cache_size": "0" # CRÍTICO PARA SUPABASE POOLER (Transaction Mode)
+            }
         }
-        // Aquí podrías navegar a la pantalla de login
-        // Navigator.of(context).pop();
-      } else {
-        // Hubo un error en el servidor (ej: email duplicado, placa duplicada)
-        final error = jsonDecode(response.body);
-        debugPrint('Error del servidor: ${response.statusCode}');
-        debugPrint('Mensaje: $error');
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error: ${error['error']}')));
-        }
-      }
-    } catch (e) {
-      // Error de conexión (ej: sin internet, API apagada, IP incorrecta)
-      debugPrint('Error de conexión: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Error de conexión. Revisa el servidor.'),
-          ),
-        );
-      }
-    }
-  }
+    )
+except Exception as e:
+    print(f"FATAL: Error inicializando engine DB: {e}")
 
-  // **Función para mostrar mensajes de error
-  void _showMessage(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
+async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+Base = declarative_base()
 
-  // **Limpieza de los controladores de texto
-  void _resetFields() {
-    _nameController.clear();
-    _lastnameController.clear();
-    _emailController.clear();
-    _phoneController.clear();
-    _passwordController.clear();
-    _password2Controller.clear();
+PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
 
-    // **Reseteo del estado de los archivos y selecciones
-    setState(() {
-      _country = 'Ecuador';
-      _city = 'Guayaquil';
-      _birthDate = null;
-      _cedulaFrontFile = null;
-      _cedulaBackFile = null;
-      _selfieFile = null;
-    });
-    _showMessage('Campos limpiados');
-  }
+# -----------------------------------------------------------------------------
+# MODELOS ORM
+# -----------------------------------------------------------------------------
+class Usuario(Base):
+    __tablename__ = "usuarios"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, unique=True)
+    password_hash = Column(String)
+    role = Column(String)
+    perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
+    perfil_conductor = relationship("Conductor", back_populates="usuario", uselist=False)
+    perfil_admin = relationship("Administrador", back_populates="usuario", uselist=False)
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Registro de usuario')),
-      body: PageView(
-        controller: _pageController,
-        physics: const NeverScrollableScrollPhysics(), // Evita deslizar
-        onPageChanged: (page) => setState(() => _currentPage = page),
-        children: [
-          _buildPersonalDataPage(), // **Página 0: Datos personales
-          _buildDocumentsPage(), // **Página 1: Carga de documentos
-        ],
-      ),
-    );
-  }
+class Cliente(Base):
+    __tablename__ = "clientes"
+    id_cliente = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    nom_apell = Column(String)
+    pais = Column(String)
+    ciudad = Column(String)
+    telefono = Column(String)
+    fecha_nacimiento = Column(Date)
+    usuario = relationship("Usuario", back_populates="perfil_cliente")
 
-  // **Página 0: Datos personales
-  Widget _buildPersonalDataPage() {
-    //return SingleChildScrollView( // <-- Añadido para evitar overflow
-    return Padding(
-      padding: const EdgeInsets.all(20.0),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Datos Personales',
-              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            // **Campo para el nombre
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: 'Nombre',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person),
-              ),
-            ),
-            const SizedBox(height: 15),
+class Vehiculo(Base):
+    __tablename__ = "vehiculos"
+    id = Column(Integer, primary_key=True)
+    marca = Column(String)
+    modelo = Column(String)
+    placa = Column(String, unique=True)
+    color = Column(String, nullable=True)
+    anio = Column(String, nullable=True)
 
-            // **Campo para el apellido
-            TextField(
-              controller: _lastnameController,
-              decoration: const InputDecoration(
-                labelText: 'Apellido',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person_outline),
-              ),
-            ),
-            const SizedBox(height: 15),
+class Conductor(Base):
+    __tablename__ = "conductores"
+    id_conductor = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    vehiculo_id = Column(Integer, ForeignKey("vehiculos.id"))
+    nom_apell = Column(String)
+    telefono = Column(String)
+    fecha_nacimiento = Column(Date)
+    ubicacion = Column(Geometry('POINT', srid=4326), nullable=True)
+    activo = Column(Boolean, default=False)
+    usuario = relationship("Usuario", back_populates="perfil_conductor")
+    vehiculo = relationship("Vehiculo")
 
-            //**Ubicación
-            DropdownButtonFormField<String>(
-              value: _country,
-              decoration: const InputDecoration(
-                labelText: 'País',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.place),
-              ),
-              items: _citiesByCountry.keys
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                  .toList(),
-              onChanged: (v) {
-                setState(() {
-                  _country = v!;
-                  _city = _citiesByCountry[_country]!.first;
-                  //_phoneController.text = _getCountryPhoneCode(_country);
-                });
-              },
-            ),
-            const SizedBox(height: 15),
+class Administrador(Base):
+    __tablename__ = "administradores"
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    nom_apell = Column(String)
+    cargo = Column(String)
+    telefono = Column(String)
+    usuario = relationship("Usuario", back_populates="perfil_admin")
 
-            DropdownButtonFormField<String>(
-              value: _city,
-              decoration: const InputDecoration(
-                labelText: 'Ciudad',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.location_city),
-              ),
-              items: _citiesByCountry[_country]!
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                  .toList(),
-              onChanged: (v) => setState(() => _city = v!),
-            ),
-            const SizedBox(height: 15),
+class Emergencia(Base):
+    __tablename__ = "emergencia"
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    nombre_contacto = Column(String)
+    numero_whatsapp = Column(String)
+    fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
+    usuario = relationship("Usuario")
 
-            // **Campo para el correo electrónico
-            TextField(
-              controller: _emailController,
-              decoration: const InputDecoration(
-                labelText: 'Correo electrónico',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.mail),
-              ),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            const SizedBox(height: 15),
+class Alerta(Base):
+    __tablename__ = "alertas"
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    ubicacion = Column(String)
+    mensaje_extra = Column(String)
+    fecha = Column(DateTime(timezone=True), server_default=func.now())
+    usuario = relationship("Usuario")
 
-            // ** campo para telefono
-            TextField(
-              controller: _phoneController,
-              decoration: InputDecoration(
-                labelText: 'Teléfono',
-                border: const OutlineInputBorder(),
-                prefixIcon: Container(
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(right: 8),
-                  decoration: const BoxDecoration(
-                    border: Border(
-                      right: BorderSide(color: Colors.grey, width: 1),
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        _getCountryPhoneCode(_country),
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black54,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                prefixIconConstraints: const BoxConstraints(
-                  minWidth: 60,
-                  minHeight: 0,
-                  maxHeight: 50,
-                ),
-              ),
-              keyboardType: TextInputType.phone,
-            ),
-            const SizedBox(height: 15),
+class Viaje(Base):
+    __tablename__ = "viajes"
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("usuarios.id"))
+    conductor_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
+    origen = Column(String)
+    destino = Column(String)
+    estado = Column(String, default='pendiente')
+    tarifa = Column(Float)
+    origen_lat = Column(Float, nullable=True)
+    origen_lng = Column(Float, nullable=True)
+    destino_lat = Column(Float, nullable=True)
+    destino_lng = Column(Float, nullable=True)
+    origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
+    destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
+    clave_seguridad = Column(String, nullable=True)
+    fecha_creacion = Column(DateTime(timezone=True), server_default=func.now())
+    cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
+    conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
-            // **Campo para la contraseña
-            TextField(
-              controller: _passwordController,
-              obscureText: !_isPasswordVisible,
-              decoration: InputDecoration(
-                labelText: 'Contraseña',
-                border: const OutlineInputBorder(),
-                prefixIcon: Icon(Icons.password),
-                suffixIcon: GestureDetector(
-                  onTapDown: (_) {
-                    setState(() => _isPasswordVisible = true);
-                  },
-                  onTapUp: (_) {
-                    setState(() => _isPasswordVisible = false);
-                  },
-                  onTapCancel: () {
-                    setState(() => _isPasswordVisible = false);
-                  },
-                  child: Icon(
-                    _isPasswordVisible
-                        ? Icons.visibility
-                        : Icons.visibility_off,
-                    color: Colors.grey,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 15),
+# -----------------------------------------------------------------------------
+# DTOs
+# -----------------------------------------------------------------------------
+class LoginRequest(BaseModel):
+    email: str; password: str
 
-            // **Campo para confirmar la contraseña
-            TextField(
-              controller: _password2Controller,
-              obscureText: !_isPassword2Visible,
-              decoration: InputDecoration(
-                labelText: 'Confirmar Contraseña',
-                border: const OutlineInputBorder(),
-                prefixIcon: Icon(Icons.password_outlined),
-                suffixIcon: GestureDetector(
-                  onTapDown: (_) {
-                    setState(() => _isPassword2Visible = true);
-                  },
-                  onTapUp: (_) {
-                    setState(() => _isPassword2Visible = false);
-                  },
-                  onTapCancel: () {
-                    setState(() => _isPassword2Visible = false);
-                  },
-                  child: Icon(
-                    _isPassword2Visible
-                        ? Icons.visibility
-                        : Icons.visibility_off,
-                    color: Colors.grey,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 15),
+class ViajeRequest(BaseModel):
+    usuario_id: int; origen: str; destino: str; tarifa: float
+    origen_lat: Optional[float] = None; origen_lng: Optional[float] = None
+    destino_lat: Optional[float] = None; destino_lng: Optional[float] = None
 
-            // **Campo para fecha de nacimiento
-            const Text(
-              'Fecha de Nacimiento:',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: InputDecorator(
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.calendar_month_rounded),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 14,
-                      ),
-                    ),
-                    child: Text(
-                      _birthDate == null
-                          ? 'DD/MM/AAAA'
-                          : '${_birthDate!.day}/${_birthDate!.month}/${_birthDate!.year}',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: _birthDate == null
-                            ? Colors.grey.shade600
-                            : Colors.black,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
+class AceptarViajeRequest(BaseModel):
+    viaje_id: int; conductor_id: int
 
-                SizedBox(
-                  width: 50,
-                  height: 50,
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: DateTime.now(),
-                        firstDate: DateTime(1900),
-                        lastDate: DateTime.now(),
-                      );
-                      if (picked != null) setState(() => _birthDate = picked);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                      backgroundColor: Colors.deepPurple,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.calendar_month,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+class UsuarioRegistroRequest(BaseModel):
+    nombre: str; email: str; password: str; role: str = "cliente"
+    telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None
+    pais: Optional[str] = None; ciudad: Optional[str] = None
 
-            const SizedBox(height: 30),
+class RegistroConductorRequest(BaseModel):
+    nombre: str; email: str; password: str; telefono: str; fecha_nacimiento: str
+    role: str = "conductor"; vehiculo_marca: str; vehiculo_modelo: str; vehiculo_placa: str
+    vehiculo_color: Optional[str] = None; vehiculo_anio: Optional[str] = None; cedula: Optional[str] = None; horario_trabajo: Optional[str] = None
 
-            // **Botones de navegación
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                ElevatedButton(
-                  onPressed: _prevPage,
-                  child: const Text('Anterior'),
-                ),
-                ElevatedButton(
-                  onPressed: _nextPage,
-                  child: const Text('Siguiente'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+class ContactoRequest(BaseModel):
+    usuario_id: int; nombre_contacto: str; numero_whatsapp: str
 
-  // **Página 1: Carga de documentos
-  Widget _buildDocumentsPage() {
-    return SingleChildScrollView(
-      // para evitar overflow
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Documentos Requeridos',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
+class ContactoEditRequest(BaseModel):
+    nombre_contacto: str; numero_whatsapp: str
 
-            //*? Selfie
-            DocumentRow(
-              title: 'Selfie',
-              file: _selfieFile,
-              icon: Icons.camera_alt,
-              onPressed: () => _pickImageFile((file) => _selfieFile = file),
-            ),
-            const SizedBox(height: 10),
+class AlertaRequest(BaseModel):
+    usuario_id: int; ubicacion: str; mensaje: str
 
-            // *?Cédula frente
-            DocumentRow(
-              title: 'Identificacion (frente)',
-              file: _cedulaFrontFile,
-              icon: Icons.image,
-              onPressed: () =>
-                  _pickImageFile((file) => _cedulaFrontFile = file),
-            ),
-            const SizedBox(height: 10),
+class UbicacionConductorRequest(BaseModel):
+    usuario_id: int; latitud: float; longitud: float
 
-            //*? Cédula dorso
-            DocumentRow(
-              title: 'Identificacion (dorso)',
-              file: _cedulaBackFile,
-              icon: Icons.image,
-              onPressed: () => _pickImageFile((file) => _cedulaBackFile = file),
-            ),
+class EstadoConductorRequest(BaseModel):
+    usuario_id: int; activo: bool
 
-            const SizedBox(height: 30),
+class EstadoViajeRequest(BaseModel):
+    viaje_id: int; nuevo_estado: str
 
-            // **Botones
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                ElevatedButton(
-                  onPressed: _prevPage,
-                  child: const Text('Anterior'),
-                ),
+class CancelarViajeRequest(BaseModel):
+    viaje_id: int; motivo: str = "Cancelado por usuario/conductor"
 
-                ElevatedButton(
-                  onPressed: _submitFormularioApi,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                  ),
-                  child: const Text('Registrarse'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
+class IniciarViajeRequest(BaseModel):
+    viaje_id: int; clave_ingresada: str
 
-            //!Boton de limpiar
-            SizedBox(
-              width: double.infinity,
-              child: TextButton(
-                onPressed: _resetFields,
-                style: TextButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text('Limpiar campos'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+# -----------------------------------------------------------------------------
+# CONFIGURACIÓN APP & ADMIN
+# -----------------------------------------------------------------------------
+app = FastAPI(title="Taxi App API", description="API REST para Tesis")
 
+# CORS: Permitir acceso desde cualquier origen (importante para la app móvil)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+if engine:
+    try:
+        admin = Admin(app, engine, title="Taxi Admin")
+        class UsuarioAdmin(ModelView, model=Usuario): column_list = [Usuario.id, Usuario.email, Usuario.role]
+        class ClienteAdmin(ModelView, model=Cliente): column_list = [Cliente.id_cliente, Cliente.nom_apell, Cliente.ciudad]
+        class ConductorAdmin(ModelView, model=Conductor): column_list = [Conductor.id_conductor, Conductor.nom_apell, Conductor.activo]
+        class VehiculoAdmin(ModelView, model=Vehiculo): column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.modelo]
+        class ViajeAdmin(ModelView, model=Viaje): column_list = [Viaje.id, Viaje.estado, Viaje.tarifa, Viaje.origen]
+        class EmergenciaAdmin(ModelView, model=Emergencia): column_list = [Emergencia.id, Emergencia.nombre_contacto]
+        class AlertaAdmin(ModelView, model=Alerta): column_list = [Alerta.id, Alerta.ubicacion, Alerta.fecha]
+        class AdministradorAdmin(ModelView, model=Administrador): column_list = [Administrador.id, Administrador.nom_apell]
+
+        admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin)
+        admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(EmergenciaAdmin)
+        admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
+    except Exception as e:
+        print(f"WARN: Error configurando Admin: {e}")
+
+async def get_db():
+    if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
+    async with async_session() as session: yield session
+
+# -----------------------------------------------------------------------------
+# ENDPOINTS API
+# -----------------------------------------------------------------------------
+@app.get("/")
+def leer_raiz(): 
+    return {"mensaje": "API Taxi Running.", "estado": "OK"}
+
+@app.post("/login")
+async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
+        user = res.fetchone()
+        
+        if not user: return {"error": "Usuario no encontrado"}
+        if user.password_hash != datos.password: return {"error": "Contraseña incorrecta"}
+
+        nombre_real = "Usuario"
+        try:
+            if user.role == 'cliente':
+                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cli: nombre_real = res_cli.nom_apell
+            elif user.role == 'conductor':
+                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cond: nombre_real = res_cond.nom_apell
+        except Exception: pass
+
+        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
+    except Exception as e:
+        return {"error": f"Error interno: {str(e)}"}
+
+@app.post("/registrar_usuario")
+async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
+        
+        uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
+        try:
+            f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
+            await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
+            {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
+        except: pass
+        
+        await db.commit()
+        return {"mensaje": "Registrado", "id": uid}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.post("/registrar_conductor")
+async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
+        
+        uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "conductor"})).scalar()
+        vid = (await db.execute(text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"), {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio})).scalar()
+        
+        f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
+        await db.execute(text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"), {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac})
+        
+        await db.commit()
+        return {"mensaje": "Conductor registrado", "id": uid}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.post("/viajes/solicitar")
+async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        clave = random.choice(PALABRAS_CLAVE)
+        geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
+        geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
+        
+        query = text(f"INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, {geo_ori}, {geo_des}, :clave, NOW()) RETURNING id")
+        res = await db.execute(query, {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng, "clave": clave})
+        vid = res.scalar()
+        
+        await db.commit()
+        return {"mensaje": "Viaje solicitado", "id_viaje": vid, "clave": clave}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.get("/viajes/pendientes")
+async def ver_pendientes(db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, 
+                   v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng, 
+                   c.nom_apell, v.fecha_creacion
+            FROM viajes v
+            LEFT JOIN clientes c ON v.cliente_id = c.usuario_id
+            WHERE v.estado='pendiente' 
+            ORDER BY v.fecha_creacion DESC
+            LIMIT 50
+        """)
+        res = await db.execute(query)
+        return [{"id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa, 
+                 "estado": r.estado, "cliente": r.nom_apell or "Cliente", 
+                 "origen_lat": r.origen_lat, "origen_lng": r.origen_lng, 
+                 "destino_lat": r.destino_lat, "destino_lng": r.destino_lng,
+                 "creado_en": r.fecha_creacion.isoformat() if r.fecha_creacion else None} for r in res.fetchall()]
+    except: return []
+
+@app.post("/viajes/aceptar")
+async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+        if st != 'pendiente': return {"error": "Viaje no disponible"}
+        
+        await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
+        await db.commit()
+        return {"mensaje": "Viaje aceptado"}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.post("/viajes/validar_inicio")
+async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        real = (await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+        if not real: return {"error": "Datos no encontrados", "exito": False}
+        
+        if d.clave_ingresada.upper().strip() == real.upper().strip():
+            await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
+            await db.commit()
+            return {"mensaje": "OK", "exito": True}
+        else: return {"error": "Clave incorrecta", "exito": False}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e), "exito": False}
+
+@app.post("/viajes/actualizar_estado")
+async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"), {"st": d.nuevo_estado, "vid": d.viaje_id})
+        await db.commit()
+        return {"mensaje": "Estado actualizado"}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.post("/viajes/cancelar")
+async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
+        if not st: return {"error": "Viaje no encontrado"}
+        if st == 'cancelado': return {"mensaje": "Ya cancelado"}
+        if st == 'finalizado': return {"error": "No se puede cancelar un viaje finalizado."}
+
+        await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
+        await db.commit()
+        return {"mensaje": "Viaje cancelado correctamente"}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": f"Error interno: {str(e)}"}
+
+@app.get("/viajes/{viaje_id}")
+async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.estado, v.conductor_id, v.clave_seguridad, 
+                   v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
+                   c.nom_apell as nombre_conductor, ve.placa, ve.modelo, ve.color,
+                   c.telefono,
+                   ST_X(c.ubicacion::geometry) as conductor_lng, 
+                   ST_Y(c.ubicacion::geometry) as conductor_lat
+            FROM viajes v
+            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
+            LEFT JOIN vehiculos ve ON c.vehiculo_id = ve.id
+            WHERE v.id = :vid
+        """)
+        v = (await db.execute(query, {"vid": viaje_id})).fetchone()
+        if v:
+            return {
+                "estado": v.estado,
+                "clave_seguridad": v.clave_seguridad,
+                "origen": {"lat": v.origen_lat, "lng": v.origen_lng},
+                "destino": {"lat": v.destino_lat, "lng": v.destino_lng},
+                "conductor": {
+                    "nombre": v.nombre_conductor,
+                    "placa": v.placa,
+                    "modelo": v.modelo,
+                    "color": v.color,
+                    "telefono": v.telefono,
+                    "lat": v.conductor_lat,
+                    "lng": v.conductor_lng
+                } if v.conductor_id else None
+            }
+        return {"error": "No encontrado"}
+    except Exception as e: return {"error": str(e)}
+
+@app.post("/contactos/agregar")
+async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
+        await db.commit()
+        return {"mensaje": "Guardado"}
+    except Exception as e: 
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.get("/contactos/listar/{uid}")
+async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"), {"uid": uid})
+    return [{"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp} for c in res.fetchall()]
+
+@app.put("/contactos/editar/{cid}")
+async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
+        await db.commit()
+        return {"mensaje": "Actualizado"}
+    except: return {"error": "Error"}
+
+@app.delete("/contactos/eliminar/{cid}")
+async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
+        await db.commit()
+        return {"mensaje": "Eliminado"}
+    except: return {"error": "Error"}
+
+@app.post("/sos/activar")
+async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
+        await db.commit()
+        return {"mensaje": "Alerta registrada"}
+    except: return {"error": "Error"}
+
+@app.post("/conductores/ubicacion")
+async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
+        await db.commit()
+        return {"mensaje": "Ubicación OK"}
+    except: return {"error": "Error"}
+
+@app.post("/conductores/estado")
+async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
+        await db.commit()
+        return {"mensaje": "Estado OK"}
+    except: return {"error": "Error"}
+
+@app.get("/conductores/cercanos")
+async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT c.id_conductor, c.nom_apell, v.placa, v.modelo,
+                   ST_X(c.ubicacion::geometry) as lng, 
+                   ST_Y(c.ubicacion::geometry) as lat
+            FROM conductores c
+            JOIN vehiculos v ON c.vehiculo_id = v.id
+            WHERE c.ubicacion IS NOT NULL
+            AND c.activo = TRUE 
+            AND ST_DWithin(c.ubicacion, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :metros)
+        """)
+        res = await db.execute(query, {"lat": lat, "lng": lng, "metros": radio_km * 1000})
+        return [{"id": c.id_conductor, "nombre": c.nom_apell, "placa": c.placa, "modelo": c.modelo, "lat": c.lat, "lng": c.lng} for c in res.fetchall()]
+    except: return []
+
+# -----------------------------------------------------------------------------
+# ARRANQUE DEL SERVIDOR (IMPORTANTE PARA RENDER)
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    # Render asigna el puerto en la variable de entorno 'PORT'
+    port = int(os.getenv("PORT", 8000))
+    # 'main:app' asume que este archivo se llama main.py
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
 
