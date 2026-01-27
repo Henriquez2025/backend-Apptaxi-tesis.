@@ -194,7 +194,12 @@ class Viaje(Base):
 class LoginRequest(BaseModel):
     email: str
     password: str
-
+    
+class SyncAuthRequest(BaseModel):
+    # Email del usuario autenticado en Supabase
+    email: str
+    # UID único que entrega Supabase Auth
+    supabase_uid: str
 
 class ViajeRequest(BaseModel):
     usuario_id: int
@@ -997,3 +1002,4 @@ if __name__ == "__main__":
 
     # "main:app" asume que este archivo se llama main.py
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+
