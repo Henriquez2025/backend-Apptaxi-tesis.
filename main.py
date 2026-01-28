@@ -62,6 +62,43 @@ PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJ
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
 SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_SERVICE_KEY")
 
+async def _supabase_admin_create_user(email: str, password: str, role: str):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
+    url = f"{SUPABASE_URL}/auth/v1/admin/users"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "email": email,
+        "password": password,
+        "email_confirm": True,
+        "user_metadata": {"role": role},
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if resp.status_code not in (200, 201):
+        try:
+            body = resp.json()
+            msg = body.get("msg") or body.get("message") or body.get("error") or str(body)
+        except Exception:
+            msg = resp.text or f"HTTP {resp.status_code}"
+        return {"error": msg}
+    return resp.json()
+
+async def _supabase_admin_delete_user(user_id: str):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return
+    url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.delete(url, headers=headers)
+
 # -----------------------------------------------------------------------------
 # MODELOS ORM
 # -----------------------------------------------------------------------------
@@ -370,6 +407,50 @@ async def registrar_conductor(datos: RegistroConductorRequest, db: AsyncSession 
         return {"mensaje": "Conductor registrado", "id": uid}
     except Exception as e: 
         await db.rollback()
+        return {"error": str(e)}
+
+@app.post("/admin/registrar_conductor_auth")
+async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
+    supa_uid = None
+    try:
+        supa_user = await _supabase_admin_create_user(datos.email, datos.password, "conductor")
+        if supa_user.get("error"):
+            return {"error": supa_user["error"]}
+
+        supa_uid = supa_user.get("id") or supa_user.get("user", {}).get("id")
+        if not supa_uid:
+            return {"error": "No se pudo obtener supabase_uid"}
+
+        uid = (await db.execute(
+            text(
+                "INSERT INTO usuarios (email, password_hash, role, supabase_uid) "
+                "VALUES (:e, :p, :r, :s) "
+                "ON CONFLICT (email) DO UPDATE "
+                "SET supabase_uid = EXCLUDED.supabase_uid, "
+                "role = EXCLUDED.role, "
+                "password_hash = EXCLUDED.password_hash "
+                "RETURNING id"
+            ),
+            {"e": datos.email, "p": "managed_by_supabase", "r": "conductor", "s": supa_uid},
+        )).scalar()
+
+        vid = (await db.execute(
+            text("INSERT INTO vehiculos (marca, modelo, placa, color, anio) VALUES (:ma, :mo, :pl, :co, :an) RETURNING id"),
+            {"ma": datos.vehiculo_marca, "mo": datos.vehiculo_modelo, "pl": datos.vehiculo_placa, "co": datos.vehiculo_color, "an": datos.vehiculo_anio},
+        )).scalar()
+
+        f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
+        await db.execute(
+            text("INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, activo) VALUES (:u, :v, :n, :t, :f, FALSE)"),
+            {"u": uid, "v": vid, "n": datos.nombre, "t": datos.telefono, "f": f_nac},
+        )
+
+        await db.commit()
+        return {"mensaje": "Conductor registrado", "id": uid}
+    except Exception as e:
+        await db.rollback()
+        if supa_uid:
+            await _supabase_admin_delete_user(supa_uid)
         return {"error": str(e)}
 
 @app.post("/viajes/solicitar")
