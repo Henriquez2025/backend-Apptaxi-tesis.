@@ -269,7 +269,7 @@ async def get_db():
     async with async_session() as session: yield session
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS API (CORREGIDOS PARA EVITAR 'TRANSACTION ALREADY BEGUN')
+# ENDPOINTS API
 # -----------------------------------------------------------------------------
 @app.get("/")
 def leer_raiz(): return {"mensaje": "API Taxi Running (v28.0 - Transaction Fix)."}
@@ -277,10 +277,8 @@ def leer_raiz(): return {"mensaje": "API Taxi Running (v28.0 - Transaction Fix).
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Solo lectura, no requiere commit
         res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
         user = res.fetchone()
-        
         if not user: return {"error": "Usuario no encontrado"}
         if user.password_hash != datos.password: return {"error": "Contraseña incorrecta"}
 
@@ -376,7 +374,6 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
-        # Eliminamos 'async with db.begin()' para evitar anidamiento
         if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
         
         uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
@@ -386,7 +383,7 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
             {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
         except: pass
         
-        await db.commit() # Commit manual
+        await db.commit()
         return {"mensaje": "Registrado", "id": uid}
     except Exception as e: 
         await db.rollback()
@@ -651,6 +648,100 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
         res = await db.execute(query, {"lat": lat, "lng": lng, "metros": radio_km * 1000})
         return [{"id": c.id_conductor, "nombre": c.nom_apell, "placa": c.placa, "modelo": c.modelo, "lat": c.lat, "lng": c.lng} for c in res.fetchall()]
     except: return []
+
+# --- ADMIN ENDPOINTS PARA APP_ADMI ---
+
+@app.get("/conductores")
+async def listar_conductores(db: AsyncSession = Depends(get_db)):
+    query = text("""
+        SELECT c.id_conductor, c.usuario_id, c.nom_apell, c.telefono, c.activo,
+               v.placa, v.marca, v.modelo, v.color, v.anio
+        FROM conductores c
+        LEFT JOIN vehiculos v ON c.vehiculo_id = v.id
+        ORDER BY c.id_conductor DESC
+    """)
+    res = await db.execute(query)
+    return [
+        {
+            "id_conductor": r.id_conductor,
+            "usuario_id": r.usuario_id,
+            "nombre": r.nom_apell,
+            "telefono": r.telefono,
+            "activo": r.activo,
+            "placa": r.placa,
+            "marca": r.marca,
+            "modelo": r.modelo,
+            "color": r.color,
+            "anio": r.anio,
+        }
+        for r in res.fetchall()
+    ]
+
+class EstadoConductorByIdRequest(BaseModel):
+    activo: bool
+
+@app.put("/conductores/{id_conductor}")
+async def actualizar_estado_conductor(
+    id_conductor: int,
+    datos: EstadoConductorByIdRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await db.execute(
+            text("UPDATE conductores SET activo = :st WHERE id_conductor = :cid"),
+            {"st": datos.activo, "cid": id_conductor},
+        )
+        await db.commit()
+        return {"mensaje": "Estado OK"}
+    except Exception as e:
+        await db.rollback()
+        return {"error": str(e)}
+
+@app.get("/conductores/{id_conductor}")
+async def historial_conductor(id_conductor: int, db: AsyncSession = Depends(get_db)):
+    query = text("""
+        SELECT v.id, v.origen, v.destino, v.estado, v.tarifa, v.fecha_creacion
+        FROM viajes v
+        JOIN conductores c ON v.conductor_id = c.usuario_id
+        WHERE c.id_conductor = :cid
+        ORDER BY v.fecha_creacion DESC
+        LIMIT 100
+    """)
+    res = await db.execute(query, {"cid": id_conductor})
+    return [
+        {
+            "id": r.id,
+            "origen": r.origen,
+            "destino": r.destino,
+            "estado": r.estado,
+            "tarifa": r.tarifa,
+            "fecha_creacion": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+        }
+        for r in res.fetchall()
+    ]
+
+@app.get("/usuarios")
+async def listar_usuarios(db: AsyncSession = Depends(get_db)):
+    res = await db.execute(text("SELECT id, email, role FROM usuarios ORDER BY id DESC"))
+    return [{"id": r.id, "email": r.email, "role": r.role} for r in res.fetchall()]
+
+@app.get("/vehiculos/{placa}")
+async def obtener_vehiculo_por_placa(placa: str, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(
+        text("SELECT id, marca, modelo, placa, color, anio FROM vehiculos WHERE placa = :p"),
+        {"p": placa},
+    )
+    r = res.fetchone()
+    if not r:
+        return {"error": "No encontrado"}
+    return {
+        "id": r.id,
+        "marca": r.marca,
+        "modelo": r.modelo,
+        "placa": r.placa,
+        "color": r.color,
+        "anio": r.anio,
+    }
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
