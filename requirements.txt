@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 asyncpg
 geoalchemy2
@@ -14,3 +14,4 @@ itsdangerous
 jinja2
 httpx
 psycopg2-binary
+
