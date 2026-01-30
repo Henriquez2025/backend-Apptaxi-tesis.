@@ -108,6 +108,16 @@ async def _supabase_admin_delete_user(user_id: str):
     async with httpx.AsyncClient(timeout=15) as client:
         await client.delete(url, headers=headers)
 
+_sos_connections = set()
+
+async def _broadcast_sos(payload: dict):
+    if not _sos_connections:
+        return
+    for ws in list(_sos_connections):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            _sos_connections.discard(ws)
 
 # -----------------------------------------------------------------------------
 # MODELOS ORM
@@ -238,6 +248,15 @@ class ContactoEditRequest(BaseModel):
 
 class AlertaRequest(BaseModel):
     usuario_id: int; ubicacion: str; mensaje: str
+
+class SosConductorRequest(BaseModel):
+    usuario_id: int
+    lat: float
+    lng: float
+    mensaje: Optional[str] = None
+
+class SosConductorCloseRequest(BaseModel):
+    usuario_id: int
 
 class UbicacionConductorRequest(BaseModel):
     usuario_id: int; latitud: float; longitud: float
@@ -690,7 +709,6 @@ async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
         return {"mensaje": "Alerta registrada"}
     except: return {"error": "Error"}
 
-
 @app.post("/sos/activar_conductor")
 async def activar_sos_conductor(d: SosConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
@@ -753,7 +771,9 @@ async def cerrar_sos_conductor(d: SosConductorCloseRequest):
         "ts": datetime.utcnow().isoformat(),
     }
     await _broadcast_sos(payload)
-    return {"mensaje": "SOS cerrado"}@app.post("/conductores/ubicacion")
+    return {"mensaje": "SOS cerrado"}
+
+@app.post("/conductores/ubicacion")
 async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
         await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
@@ -853,7 +873,6 @@ async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPu
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
-
 @app.websocket("/ws/sos")
 async def ws_sos(websocket: WebSocket):
     await websocket.accept()
@@ -865,5 +884,6 @@ async def ws_sos(websocket: WebSocket):
         pass
     finally:
         _sos_connections.discard(websocket)
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
