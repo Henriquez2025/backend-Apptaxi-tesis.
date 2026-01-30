@@ -7,7 +7,7 @@ from typing import Optional, List
 
 import uvicorn
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -690,7 +690,70 @@ async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
         return {"mensaje": "Alerta registrada"}
     except: return {"error": "Error"}
 
-@app.post("/conductores/ubicacion")
+
+@app.post("/sos/activar_conductor")
+async def activar_sos_conductor(d: SosConductorRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(
+            text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"),
+            {"uid": d.usuario_id, "ubi": f"{d.lat},{d.lng}", "msg": d.mensaje or "SOS Conductor"},
+        )
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        return {"error": str(e)}
+
+    res = await db.execute(
+        text("""
+            SELECT c.nom_apell, v.marca, v.modelo, v.placa, v.color
+            FROM conductores c
+            LEFT JOIN vehiculos v ON c.vehiculo_id = v.id
+            WHERE c.usuario_id = :uid
+        """),
+        {"uid": d.usuario_id},
+    )
+    row = res.fetchone()
+
+    payload = {
+        "type": "sos",
+        "usuario_id": d.usuario_id,
+        "conductor": row.nom_apell if row and row.nom_apell else "Conductor",
+        "vehiculo": {
+            "marca": row.marca if row else None,
+            "modelo": row.modelo if row else None,
+            "placa": row.placa if row else None,
+            "color": row.color if row else None,
+        },
+        "lat": d.lat,
+        "lng": d.lng,
+        "mensaje": d.mensaje,
+        "ts": datetime.utcnow().isoformat(),
+    }
+    await _broadcast_sos(payload)
+    return {"mensaje": "Alerta SOS enviada"}
+
+@app.post("/sos/actualizar_conductor")
+async def actualizar_sos_conductor(d: SosConductorRequest):
+    payload = {
+        "type": "sos_update",
+        "usuario_id": d.usuario_id,
+        "lat": d.lat,
+        "lng": d.lng,
+        "mensaje": d.mensaje,
+        "ts": datetime.utcnow().isoformat(),
+    }
+    await _broadcast_sos(payload)
+    return {"mensaje": "Actualizada"}
+
+@app.post("/sos/cerrar_conductor")
+async def cerrar_sos_conductor(d: SosConductorCloseRequest):
+    payload = {
+        "type": "sos_end",
+        "usuario_id": d.usuario_id,
+        "ts": datetime.utcnow().isoformat(),
+    }
+    await _broadcast_sos(payload)
+    return {"mensaje": "SOS cerrado"}@app.post("/conductores/ubicacion")
 async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
         await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
@@ -790,5 +853,17 @@ async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPu
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
+
+@app.websocket("/ws/sos")
+async def ws_sos(websocket: WebSocket):
+    await websocket.accept()
+    _sos_connections.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
