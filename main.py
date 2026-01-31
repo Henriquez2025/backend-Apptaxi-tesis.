@@ -220,7 +220,9 @@ class LoginRequest(BaseModel):
     email: str; password: str
     
 class AuthSyncRequest(BaseModel):
-    email: str; supabase_uid: str
+    email: str
+    supabase_uid: str
+    access_token: Optional[str] = None
 
 class ViajeRequest(BaseModel):
     usuario_id: int; origen: str; destino: str; tarifa: float
@@ -348,6 +350,10 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
         return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
 
+    auth_user = None
+    admin_error = None
+    token_error = None
+
     try:
         url = f"{SUPABASE_URL}/auth/v1/admin/users/{datos.supabase_uid}"
         headers = {
@@ -357,21 +363,47 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, headers=headers)
 
-        if resp.status_code != 200:
+        if resp.status_code == 200:
+            auth_user = resp.json()
+        else:
             try:
                 body = resp.json()
-                msg = body.get("msg") or body.get("message") or body.get("error") or str(body)
+                admin_error = body.get("msg") or body.get("message") or body.get("error") or str(body)
             except Exception:
-                msg = resp.text or f"HTTP {resp.status_code}"
-            return {"error": msg}
-
-        auth_user = resp.json()
-        email_auth = (auth_user.get("email") or "").lower()
-        if email_auth and email_auth != datos.email.lower():
-            return {"error": "Email no coincide con el uid de Supabase"}
+                admin_error = resp.text or f"HTTP {resp.status_code}"
     except Exception as e:
-        return {"error": f"Error validando Supabase: {str(e)}"}
+        admin_error = f"Error validando Supabase (admin): {str(e)}"
 
+    if not auth_user and datos.access_token:
+        try:
+            url = f"{SUPABASE_URL}/auth/v1/user"
+            headers = {
+                "apikey": SUPABASE_SERVICE_ROLE,
+                "Authorization": f"Bearer {datos.access_token}",
+            }
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                auth_user = resp.json()
+            else:
+                try:
+                    body = resp.json()
+                    token_error = body.get("msg") or body.get("message") or body.get("error") or str(body)
+                except Exception:
+                    token_error = resp.text or f"HTTP {resp.status_code}"
+        except Exception as e:
+            token_error = f"Error validando Supabase (token): {str(e)}"
+
+    if not auth_user:
+        return {"error": admin_error or token_error or "No se pudo validar usuario en Supabase"}
+
+    email_auth = (auth_user.get("email") or "").lower()
+    if email_auth and email_auth != datos.email.lower():
+        return {"error": "Email no coincide con el uid de Supabase"}
+
+    auth_id = auth_user.get("id")
+    if auth_id and auth_id != datos.supabase_uid:
+        return {"error": "UID no coincide con Supabase"}
     try:
         res = await db.execute(
             text("SELECT id, email, role FROM usuarios WHERE email = :email"),
