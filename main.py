@@ -494,6 +494,102 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return {"error": f"Error interno: {str(e)}"}
+
+@app.post("/auth/resync_clientes")
+async def auth_resync_clientes(db: AsyncSession = Depends(get_db)):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
+
+    # 1) Cargar usuarios cliente del backend
+    res = await db.execute(text("SELECT id, email FROM usuarios WHERE role = 'cliente'"))
+    usuarios = res.fetchall()
+    if not usuarios:
+        return {"mensaje": "Sin usuarios cliente"}
+
+    # 2) Listar usuarios de Supabase Auth (admin)
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+    }
+    page = 1
+    per_page = 1000
+    auth_by_email = {}
+
+    while True:
+        url = f"{SUPABASE_URL}/auth/v1/admin/users?page={page}&per_page={per_page}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            return {"error": f"Error listando usuarios Supabase: {resp.status_code}", "body": resp.text}
+
+        data = resp.json()
+        users = data.get("users") if isinstance(data, dict) else data
+        if not users:
+            break
+
+        for u in users:
+            email = (u.get("email") or "").lower()
+            if email:
+                auth_by_email[email] = u
+
+        if len(users) < per_page:
+            break
+        page += 1
+
+    # 3) Sincronizar metadata a clientes
+    updated = 0
+    inserted = 0
+
+    for u in usuarios:
+        email = (u.email or "").lower()
+        auth_user = auth_by_email.get(email)
+        if not auth_user:
+            continue
+
+        meta = auth_user.get("user_metadata") or auth_user.get("raw_user_meta_data") or {}
+        nom_apell = (meta.get("nombre") or meta.get("nom_apell") or "").strip() or None
+        pais = (meta.get("pais") or "").strip() or None
+        ciudad = (meta.get("ciudad") or "").strip() or None
+        telefono = (meta.get("telefono") or meta.get("phone") or "").strip() or None
+        fecha_nac = (meta.get("fecha_nacimiento") or meta.get("fechaNacimiento") or "").strip() or None
+
+        try:
+            exists = (await db.execute(
+                text("SELECT 1 FROM clientes WHERE usuario_id = :uid"),
+                {"uid": u.id},
+            )).scalar()
+
+            if not exists:
+                await db.execute(
+                    text(
+                        "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
+                        "VALUES (:uid, :nom, :pais, :ciudad, :tel, "
+                        "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END)"
+                    ),
+                    {"uid": u.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
+                )
+                inserted += 1
+            else:
+                await db.execute(
+                    text(
+                        "UPDATE clientes SET "
+                        "nom_apell = COALESCE(nom_apell, :nom), "
+                        "pais = COALESCE(pais, :pais), "
+                        "ciudad = COALESCE(ciudad, :ciudad), "
+                        "telefono = COALESCE(telefono, :tel), "
+                        "fecha_nacimiento = COALESCE(fecha_nacimiento, "
+                        "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END) "
+                        "WHERE usuario_id = :uid"
+                    ),
+                    {"uid": u.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
+                )
+                updated += 1
+        except Exception:
+            await db.rollback()
+            continue
+
+    await db.commit()
+    return {"mensaje": "Resync completado", "inserted": inserted, "updated": updated}
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
@@ -1197,5 +1293,36 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
