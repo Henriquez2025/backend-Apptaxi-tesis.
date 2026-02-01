@@ -2,8 +2,10 @@ import os
 import urllib.parse
 import random
 import json
+import shutil 
 from datetime import date, datetime, timedelta
 from typing import Optional, List
+from fastapi.staticfiles import StaticFiles
 
 import uvicorn
 import httpx
@@ -286,7 +288,8 @@ class EstadoConductorPut(BaseModel):
 # -----------------------------------------------------------------------------
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
+os.makedirs("static", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 if engine:
     admin = Admin(app, engine, title="Taxi Admin")
     class UsuarioAdmin(ModelView, model=Usuario): column_list = [Usuario.id, Usuario.email, Usuario.role]
@@ -1295,19 +1298,62 @@ if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
 
+@app.get("/usuarios/perfil/{uid}")
+async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
+    try:
+        # 1. Buscar datos básicos del usuario
+        user = (await db.execute(text("SELECT email, role FROM usuarios WHERE id=:uid"), {"uid": uid})).fetchone()
+        if not user: return {"error": "Usuario no encontrado"}
 
+        nombre = "Usuario"
+        foto_url = None
 
+        # 2. Buscar el nombre real según si es cliente o conductor
+        if user.role == 'cliente':
+            res = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
+            if res: nombre = res.nom_apell
+        elif user.role == 'conductor':
+            res = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
+            if res: nombre = res.nom_apell
+            
+        # 3. Verificar si tiene foto guardada en la carpeta static
+        # Busca archivos con extensiones comunes
+        for ext in ["jpg", "png", "jpeg"]:
+            path_foto = f"static/perfil_{uid}.{ext}"
+            if os.path.exists(path_foto):
+                # devolver la ruta relativa y que flutter concatene el base url
+                foto_url = f"{str(urllib.parse.urljoin(str(os.getenv('RENDER_EXTERNAL_URL') or ''), f'/static/perfil_{uid}.{ext}'))}"
+                # Simplificación para pruebas locales/render:
+                foto_url = f"/static/perfil_{uid}.{ext}"
+                break
 
+        return {
+            "id": uid, 
+            "email": user.email, 
+            "nombre": nom_apel, 
+            "role": user.role, 
+            "foto_url": foto_url
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
-
-
-
-
-
-
-
-
-
+@app.post("/usuarios/foto")
+async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File(...)):
+    try:
+        ext = foto.filename.split(".")[-1]
+        nombre_archivo = f"perfil_{usuario_id}.{ext}"
+        ruta_completa = f"static/{nombre_archivo}"
+        
+        with open(ruta_completa, "wb") as buffer:
+            shutil.copyfileobj(foto.file, buffer)
+            
+        return {
+            "mensaje": "Foto actualizada", 
+            "url": f"/static/{nombre_archivo}"
+        }
+    except Exception as e:
+        print(f"Error subiendo foto: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 
