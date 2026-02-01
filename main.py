@@ -8,7 +8,7 @@ from typing import Optional, List
 import uvicorn
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
@@ -52,12 +52,10 @@ try:
         echo=False,
         pool_pre_ping=True,
         connect_args={
-            "server_settings": 
-            {"jit": "off"}, 
-            "command_timeout": 60}
+            "server_settings": {"jit": "off"},
+            "command_timeout": 60,
             "statement_cache_size": 0,
-            "prepared_statement_cache_size": 0,
-        },
+        }
     )
 except Exception as e:
     print(f"FATAL: Error inicializando engine DB: {e}")
@@ -673,22 +671,8 @@ async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
         geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
         geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
         
-        query = text(
-            "INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) "
-            "VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, "
-            f"{geo_ori}, {geo_des}, :clave, NOW()) RETURNING id"
-        )
-        res = await db.execute(query, {
-            "cid": v.usuario_id,
-            "ori": v.origen,
-            "des": v.destino,
-            "tar": v.tarifa,
-            "olat": v.origen_lat,
-            "olng": v.origen_lng,
-            "dlat": v.destino_lat,
-            "dlng": v.destino_lng,
-            "clave": clave,
-        })
+        query = text(f"INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, {geo_ori}, {geo_des}, :clave, NOW()) RETURNING id")
+        res = await db.execute(query, {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng, "clave": clave})
         vid = res.scalar()
         
         await db.commit()
@@ -711,34 +695,23 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
             LIMIT 50
         """)
         res = await db.execute(query)
-        return [{
-            "id": r.id,
-            "origen": r.origen,
-            "destino": r.destino,
-            "tarifa": r.tarifa,
-            "estado": r.estado,
-            "cliente": r.nom_apell or "Cliente",
-            "origen_lat": r.origen_lat,
-            "origen_lng": r.origen_lng,
-            "destino_lat": r.destino_lat,
-            "destino_lng": r.destino_lng,
-            "creado_en": r.fecha_creacion.isoformat() if r.fecha_creacion else None
-        } for r in res.fetchall()]
-    except:
-        return []
+        return [{"id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa, 
+                 "estado": r.estado, "cliente": r.nom_apell or "Cliente", 
+                 "origen_lat": r.origen_lat, "origen_lng": r.origen_lng, 
+                 "destino_lat": r.destino_lat, "destino_lng": r.destino_lng,
+                 "creado_en": r.fecha_creacion.isoformat() if r.fecha_creacion else None} for r in res.fetchall()]
+    except: return []
 
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if st != "pendiente":
-            return {"error": "Viaje no disponible"}
-
-        await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"),
-                         {"cid": d.conductor_id, "vid": d.viaje_id})
+        if st != 'pendiente': return {"error": "Viaje no disponible"}
+        
+        await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
         await db.commit()
         return {"mensaje": "Viaje aceptado"}
-    except Exception as e:
+    except Exception as e: 
         await db.rollback()
         return {"error": str(e)}
 
@@ -746,26 +719,24 @@ async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
 async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         real = (await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if not real:
-            return {"error": "Datos no encontrados", "exito": False}
-
+        if not real: return {"error": "Datos no encontrados", "exito": False}
+        
         if d.clave_ingresada.upper().strip() == real.upper().strip():
             await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
             await db.commit()
             return {"mensaje": "OK", "exito": True}
-        return {"error": "Clave incorrecta", "exito": False}
-    except Exception as e:
+        else: return {"error": "Clave incorrecta", "exito": False}
+    except Exception as e: 
         await db.rollback()
         return {"error": str(e), "exito": False}
 
 @app.post("/viajes/actualizar_estado")
 async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"),
-                         {"st": d.nuevo_estado, "vid": d.viaje_id})
+        await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"), {"st": d.nuevo_estado, "vid": d.viaje_id})
         await db.commit()
         return {"mensaje": "Estado actualizado"}
-    except Exception as e:
+    except Exception as e: 
         await db.rollback()
         return {"error": str(e)}
 
@@ -773,30 +744,26 @@ async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depe
 async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if not st:
-            return {"error": "Viaje no encontrado"}
-        if st == "cancelado":
-            return {"mensaje": "Ya cancelado"}
-        if st == "finalizado":
-            return {"error": "No se puede cancelar un viaje finalizado."}
+        if not st: return {"error": "Viaje no encontrado"}
+        if st == 'cancelado': return {"mensaje": "Ya cancelado"}
+        if st == 'finalizado': return {"error": "No se puede cancelar un viaje finalizado."}
 
         await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
         await db.commit()
         return {"mensaje": "Viaje cancelado correctamente"}
-    except Exception as e:
+    except Exception as e: 
         await db.rollback()
-        print(f"Error cancelando: {e}")
         return {"error": f"Error interno: {str(e)}"}
 
 @app.get("/viajes/{viaje_id}")
 async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
     try:
         query = text("""
-            SELECT v.estado, v.conductor_id, v.clave_seguridad,
+            SELECT v.estado, v.conductor_id, v.clave_seguridad, 
                    v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
                    c.nom_apell as nombre_conductor, ve.placa, ve.modelo, ve.color,
                    c.telefono,
-                   ST_X(c.ubicacion::geometry) as conductor_lng,
+                   ST_X(c.ubicacion::geometry) as conductor_lng, 
                    ST_Y(c.ubicacion::geometry) as conductor_lat
             FROM viajes v
             LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
@@ -817,45 +784,114 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
                     "color": v.color,
                     "telefono": v.telefono,
                     "lat": v.conductor_lat,
-                    "lng": v.conductor_lng,
+                    "lng": v.conductor_lng
                 } if v.conductor_id else None
             }
         return {"error": "No encontrado"}
+    except Exception as e: return {"error": str(e)}
+
+
+@app.get("/public/viajes/{viaje_id}")
+async def public_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.estado,
+                   ST_X(c.ubicacion::geometry) as conductor_lng,
+                   ST_Y(c.ubicacion::geometry) as conductor_lat
+            FROM viajes v
+            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
+            WHERE v.id = :vid
+        """)
+        v = (await db.execute(query, {"vid": viaje_id})).fetchone()
+        if not v:
+            return {"error": "No encontrado"}
+        return {
+            "estado": v.estado,
+            "conductor": {
+                "lat": v.conductor_lat,
+                "lng": v.conductor_lng,
+            } if v.conductor_lat is not None and v.conductor_lng is not None else None,
+        }
     except Exception as e:
         return {"error": str(e)}
 
-@app.post("/contactos/agregar")
+
+@app.get("/share/viaje/{viaje_id}", response_class=HTMLResponse)
+async def share_viaje(viaje_id: int):
+    return HTMLResponse(f"""
+<!doctype html>
+<html lang=\"es\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>Seguimiento de viaje</title>
+  <link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" />
+  <style>
+    html, body, #map {{ height: 100%; margin: 0; }}
+    .banner {{ position: absolute; top: 12px; left: 12px; right: 12px; z-index: 999; background: #fff; padding: 10px 12px; border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.15); font-family: Arial, sans-serif; }}
+    .state {{ font-size: 12px; color: #666; }}
+  </style>
+</head>
+<body>
+  <div class=\"banner\">Seguimiento en tiempo real<br><span class=\"state\" id=\"state\">Cargando�</span></div>
+  <div id=\"map\"></div>
+  <script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>
+  <script>
+    const map = L.map('map').setView([0, 0], 15);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    const marker = L.marker([0,0]).addTo(map);
+    let hasFix = false;
+
+    async function tick() {{
+      try {{
+        const r = await fetch(`/public/viajes/{viaje_id}`);
+        const data = await r.json();
+        if (data.error) {{
+          document.getElementById('state').textContent = data.error;
+          return;
+        }}
+        document.getElementById('state').textContent = data.estado || '';
+        if (data.conductor && data.conductor.lat && data.conductor.lng) {{
+          const lat = data.conductor.lat;
+          const lng = data.conductor.lng;
+          marker.setLatLng([lat, lng]);
+          if (!hasFix) {{
+            map.setView([lat, lng], 16);
+            hasFix = true;
+          }}
+        }}
+      }} catch (e) {{
+        document.getElementById('state').textContent = 'Sin conexion';
+      }}
+    }}
+
+    tick();
+    setInterval(tick, 3000);
+  </script>
+</body>
+</html>
+""")@app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
     try:
-        await db.execute(
-            text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"),
-            {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp},
-        )
+        await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
         await db.commit()
         return {"mensaje": "Guardado"}
-    except Exception as e:
+    except Exception as e: 
         await db.rollback()
         return {"error": str(e)}
 
 @app.get("/contactos/listar/{uid}")
 async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
-    res = await db.execute(
-        text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"),
-        {"uid": uid},
-    )
+    res = await db.execute(text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"), {"uid": uid})
     return [{"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp} for c in res.fetchall()]
 
 @app.put("/contactos/editar/{cid}")
 async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
     try:
-        await db.execute(
-            text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"),
-            {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid},
-        )
+        await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
         await db.commit()
         return {"mensaje": "Actualizado"}
-    except:
-        return {"error": "Error"}
+    except: return {"error": "Error"}
 
 @app.delete("/contactos/eliminar/{cid}")
 async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
@@ -863,20 +899,15 @@ async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
         await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
         await db.commit()
         return {"mensaje": "Eliminado"}
-    except:
-        return {"error": "Error"}
+    except: return {"error": "Error"}
 
 @app.post("/sos/activar")
 async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
     try:
-        await db.execute(
-            text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"),
-            {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje},
-        )
+        await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
         await db.commit()
         return {"mensaje": "Alerta registrada"}
-    except:
-        return {"error": "Error"}
+    except: return {"error": "Error"}
 
 
 @app.post("/sos/activar_conductor")
@@ -948,8 +979,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
         await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
         await db.commit()
         return {"mensaje": "Ubicación OK"}
-    except:
-        return {"error": "Error"}
+    except: return {"error": "Error"}
 
 @app.post("/conductores/estado")
 async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
@@ -957,8 +987,7 @@ async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depen
         await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
         await db.commit()
         return {"mensaje": "Estado OK"}
-    except:
-        return {"error": "Error"}
+    except: return {"error": "Error"}
 
 @app.get("/conductores/cercanos")
 async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
@@ -975,8 +1004,7 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
         """)
         res = await db.execute(query, {"lat": lat, "lng": lng, "metros": radio_km * 1000})
         return [{"id": c.id_conductor, "nombre": c.nom_apell, "placa": c.placa, "modelo": c.modelo, "lat": c.lat, "lng": c.lng} for c in res.fetchall()]
-    except:
-        return []
+    except: return []
 
 @app.get("/conductores")
 async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
@@ -997,8 +1025,7 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
             "activo": r.activo,
             "placa": r.placa
         } for r in res.fetchall()]
-    except Exception as e:
-        return []
+    except Exception as e: return []
 
 @app.get("/usuarios")
 async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
@@ -1060,5 +1087,3 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
