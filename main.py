@@ -18,7 +18,7 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
+# --- CONFIGURACI�N DE BASE DE DATOS ---
 PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID") or os.getenv("PROJECT_ID")
 SUPABASE_USER = os.getenv("SUPABASE_DB_USER") or os.getenv("DB_USER")
 SUPABASE_HOST = os.getenv("SUPABASE_DB_HOST") or os.getenv("DB_HOST") or "aws-1-sa-east-1.pooler.supabase.com"
@@ -37,14 +37,14 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 else:
     if not SUPABASE_USER or not DB_PASSWORD:
-        raise RuntimeError("Falta configuración de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
+        raise RuntimeError("Falta configuraci�n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
     encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
     DATABASE_URL = (
         f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}"
         f"@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
         "?ssl=require&prepared_statement_cache_size=0"
     )
-# Inicialización del Motor
+# Inicializaci�n del Motor
 engine = None
 try:
     engine = create_async_engine(
@@ -65,7 +65,7 @@ Base = declarative_base()
 
 PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
 
-# --- CONFIGURACIÓN SUPABASE AUTH ---
+# --- CONFIGURACI�N SUPABASE AUTH ---
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
 SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_SERVICE_KEY")
 DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
@@ -282,7 +282,7 @@ class EstadoConductorPut(BaseModel):
     activo: bool
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN APP & ADMIN
+# CONFIGURACI�N APP & ADMIN
 # -----------------------------------------------------------------------------
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -313,7 +313,7 @@ async def get_db():
 @app.get("/")
 def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
 
-# --- LOGIN Y REGISTROS BÁSICOS ---
+# --- LOGIN Y REGISTROS B�SICOS ---
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
@@ -322,7 +322,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         user = res.fetchone()
         
         if not user: return {"error": "Usuario no encontrado"}
-        if user.password_hash != datos.password: return {"error": "Contraseña incorrecta"}
+        if user.password_hash != datos.password: return {"error": "Contrase�a incorrecta"}
 
         nombre_real = "Usuario"
         try:
@@ -417,6 +417,47 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         if not user:
             return {"error": "Usuario no encontrado en backend"}
 
+        # Sincroniza metadata de Supabase -> tabla clientes (solo rol cliente)
+        if user.role == "cliente":
+            meta = auth_user.get("user_metadata") or auth_user.get("raw_user_meta_data") or {}
+            nom_apell = (meta.get("nombre") or meta.get("nom_apell") or "").strip() or None
+            pais = (meta.get("pais") or "").strip() or None
+            ciudad = (meta.get("ciudad") or "").strip() or None
+            telefono = (meta.get("telefono") or meta.get("phone") or "").strip() or None
+            fecha_nac = (meta.get("fecha_nacimiento") or meta.get("fechaNacimiento") or "").strip() or None
+
+            try:
+                exists = (await db.execute(
+                    text("SELECT 1 FROM clientes WHERE usuario_id = :uid"),
+                    {"uid": user.id},
+                )).scalar()
+                if not exists:
+                    await db.execute(
+                        text(
+                            "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
+                            "VALUES (:uid, :nom, :pais, :ciudad, :tel, "
+                            "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END)"
+                        ),
+                        {"uid": user.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
+                    )
+                    await db.commit()
+                else:
+                    await db.execute(
+                        text(
+                            "UPDATE clientes SET "
+                            "nom_apell = COALESCE(nom_apell, :nom), "
+                            "pais = COALESCE(pais, :pais), "
+                            "ciudad = COALESCE(ciudad, :ciudad), "
+                            "telefono = COALESCE(telefono, :tel), "
+                            "fecha_nacimiento = COALESCE(fecha_nacimiento, "
+                            "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END) "
+                            "WHERE usuario_id = :uid"
+                        ),
+                        {"uid": user.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
+                    )
+                    await db.commit()
+            except Exception:
+                await db.rollback()
         nombre_real = "Usuario"
         try:
             if user.role == "cliente":
@@ -530,7 +571,7 @@ async def registrar_conductor_existente(
         vehiculo_id = res_v.scalar()
 
         if not vehiculo_id:
-            raise HTTPException(status_code=404, detail="El vehículo no existe")
+            raise HTTPException(status_code=404, detail="El veh�culo no existe")
 
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
@@ -543,7 +584,7 @@ async def registrar_conductor_existente(
         """)
         res_u = await db.execute(q_user, {
             "email": email_final, 
-            "pwd": _require_default_password(), # Contraseña por defecto
+            "pwd": _require_default_password(), # Contrase�a por defecto
             "role": role
         })
         new_user_id = res_u.scalar()
@@ -594,7 +635,7 @@ async def registrar_flota_completo(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # 1. Crear el Usuario (Dueño)
+        # 1. Crear el Usuario (Due�o)
         nuevo_usuario = Usuario(
             email=f"{owner_cedula}@taxis.com",
             password_hash=_require_default_password(), 
@@ -604,7 +645,7 @@ async def registrar_flota_completo(
         await db.commit()
         await db.refresh(nuevo_usuario)
 
-        # 2. Registrar Vehículo
+        # 2. Registrar Veh�culo
         nuevo_auto = Vehiculo(
             placa=vehiculo_placa,
             marca=vehiculo_marca,
@@ -616,7 +657,7 @@ async def registrar_flota_completo(
         await db.commit()
         await db.refresh(nuevo_auto)
 
-        # 3. Registrar al Dueño en tabla Conductores
+        # 3. Registrar al Due�o en tabla Conductores
         nuevo_conductor = Conductor(
             usuario_id=nuevo_usuario.id,
             nom_apell=f"{owner_nombre} {owner_apellido}",
@@ -633,7 +674,7 @@ async def registrar_flota_completo(
         
         for extra in lista_conductores:
             # Crear usuario para el chofer extra
-            # Generar email único si no viene
+            # Generar email �nico si no viene
             email_extra = f"{extra['cedula']}@chofer.com"
             
             user_chofer = Usuario(
@@ -980,7 +1021,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
     try:
         await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
         await db.commit()
-        return {"mensaje": "Ubicación OK"}
+        return {"mensaje": "Ubicaci�n OK"}
     except: return {"error": "Error"}
 
 @app.post("/conductores/estado")
