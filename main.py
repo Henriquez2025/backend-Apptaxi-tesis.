@@ -838,7 +838,7 @@ async def share_viaje(viaje_id: int):
   <script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>
   <script>
     const map = L.map('map').setView([0, 0], 15);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+     L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ maxZoom: 19 }}).addTo(map);
     const marker = L.marker([0,0]).addTo(map);
     let hasFix = false;
 
@@ -1087,3 +1087,4 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
