@@ -497,22 +497,89 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
-        if (await db.execute(text("SELECT id FROM usuarios WHERE email = :e"), {"e": datos.email})).scalar(): return {"error": "Email existe."}
-        
-        uid = (await db.execute(text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"), {"e": datos.email, "p": datos.password, "r": "cliente"})).scalar()
+        existing_id = (await db.execute(
+            text("SELECT id FROM usuarios WHERE email = :e"),
+            {"e": datos.email},
+        )).scalar()
+
+        f_nac = None
+        if datos.fecha_nacimiento:
+            try:
+                f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
+            except Exception:
+                f_nac = None
+
+        if existing_id:
+            try:
+                exists_cli = (await db.execute(
+                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                    {"u": existing_id},
+                )).scalar()
+
+                if not exists_cli:
+                    await db.execute(
+                        text(
+                            "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
+                            "VALUES (:u, :n, :p, :c, :t, :f)"
+                        ),
+                        {
+                            "u": existing_id,
+                            "n": datos.nombre,
+                            "p": datos.pais,
+                            "c": datos.ciudad,
+                            "t": datos.telefono,
+                            "f": f_nac,
+                        },
+                    )
+                else:
+                    await db.execute(
+                        text(
+                            "UPDATE clientes SET "
+                            "nom_apell = COALESCE(NULLIF(nom_apell, ''), :n), "
+                            "pais = COALESCE(NULLIF(pais, ''), :p), "
+                            "ciudad = COALESCE(NULLIF(ciudad, ''), :c), "
+                            "telefono = COALESCE(NULLIF(telefono, ''), :t), "
+                            "fecha_nacimiento = COALESCE(fecha_nacimiento, :f) "
+                            "WHERE usuario_id = :u"
+                        ),
+                        {
+                            "u": existing_id,
+                            "n": datos.nombre,
+                            "p": datos.pais,
+                            "c": datos.ciudad,
+                            "t": datos.telefono,
+                            "f": f_nac,
+                        },
+                    )
+                await db.commit()
+                return {"mensaje": "Perfil actualizado", "id": existing_id}
+            except Exception:
+                await db.rollback()
+                return {"error": "No se pudo actualizar perfil"}
+
+        uid = (await db.execute(
+            text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
+            {"e": datos.email, "p": datos.password, "r": "cliente"},
+        )).scalar()
+
         try:
-            f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date() if datos.fecha_nacimiento else None
-            await db.execute(text("INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) VALUES (:u, :n, :p, :c, :t, :f)"), 
-            {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac})
-        except: pass
-        
+            await db.execute(
+                text(
+                    "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
+                    "VALUES (:u, :n, :p, :c, :t, :f)"
+                ),
+                {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac},
+            )
+        except Exception:
+            pass
+
         await db.commit()
         return {"mensaje": "Registrado", "id": uid}
-    except Exception as e: 
+    except Exception as e:
         await db.rollback()
         return {"error": str(e)}
 
-# --- NUEVOS ENDPOINTS PARA EL WIZARD Y FLOTAS  ---
+# --- NUEVOS ENDPOINTS PARA EL WIZARD Y FLOTAS  --- PARA EL WIZARD Y FLOTAS  ---
 
 @app.get("/vehiculos/placas")
 async def obtener_lista_placas(db: AsyncSession = Depends(get_db)):
@@ -1130,3 +1197,5 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
