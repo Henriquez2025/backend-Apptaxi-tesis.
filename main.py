@@ -51,7 +51,13 @@ try:
         DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
-        connect_args={"server_settings": {"jit": "off"}, "command_timeout": 60}
+        connect_args={
+            "server_settings": 
+            {"jit": "off"}, 
+            "command_timeout": 60}
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
     )
 except Exception as e:
     print(f"FATAL: Error inicializando engine DB: {e}")
@@ -1054,3 +1060,4 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
