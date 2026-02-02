@@ -5,11 +5,11 @@ import json
 import shutil 
 from datetime import date, datetime, timedelta
 from typing import Optional, List
-from fastapi.staticfiles import StaticFiles
 
 import uvicorn
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -20,7 +20,7 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACI�N DE BASE DE DATOS ---
+# --- CONFIGURACION DE BASE DE DATOS ---
 PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID") or os.getenv("PROJECT_ID")
 SUPABASE_USER = os.getenv("SUPABASE_DB_USER") or os.getenv("DB_USER")
 SUPABASE_HOST = os.getenv("SUPABASE_DB_HOST") or os.getenv("DB_HOST") or "aws-1-sa-east-1.pooler.supabase.com"
@@ -46,7 +46,7 @@ else:
         f"@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
         "?ssl=require&prepared_statement_cache_size=0"
     )
-# Inicializaci�n del Motor
+# Inicializacion del Motor
 engine = None
 try:
     engine = create_async_engine(
@@ -316,32 +316,6 @@ async def get_db():
 @app.get("/")
 def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
 
-# --- LOGIN Y REGISTROS B�SICOS ---
-
-@app.post("/login")
-async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
-    try:
-        res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
-        user = res.fetchone()
-        
-        if not user: return {"error": "Usuario no encontrado"}
-        if user.password_hash != datos.password: return {"error": "Contrase�a incorrecta"}
-
-        nombre_real = "Usuario"
-        try:
-            if user.role == 'cliente':
-                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
-                if res_cli: nombre_real = res_cli.nom_apell
-            elif user.role == 'conductor':
-                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
-                if res_cond: nombre_real = res_cond.nom_apell
-        except Exception: pass
-
-        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
-    except Exception as e:
-        return {"error": f"Error interno: {str(e)}"}
-
-
 @app.get("/debug/supabase")
 async def debug_supabase():
     url = SUPABASE_URL
@@ -593,9 +567,35 @@ async def auth_resync_clientes(db: AsyncSession = Depends(get_db)):
 
     await db.commit()
     return {"mensaje": "Resync completado", "inserted": inserted, "updated": updated}
+
+#LOGIN Y REGISTRO 
+@app.post("/login")
+async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
+        user = res.fetchone()
+        
+        if not user: return {"error": "Usuario no encontrado"}
+        if user.password_hash != datos.password: return {"error": "Contrase�a incorrecta"}
+
+        nombre_real = "Usuario"
+        try:
+            if user.role == 'cliente':
+                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cli: nombre_real = res_cli.nom_apell
+            elif user.role == 'conductor':
+                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cond: nombre_real = res_cond.nom_apell
+        except Exception: pass
+
+        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
+    except Exception as e:
+        return {"error": f"Error interno: {str(e)}"}
+        
 @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
+        #VERIFICA SI USUARIO EXISTE
         existing_id = (await db.execute(
             text("SELECT id FROM usuarios WHERE email = :e"),
             {"e": datos.email},
@@ -628,6 +628,8 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                             "c": datos.ciudad,
                             "t": datos.telefono,
                             "f": f_nac,
+                            "td": datos.tipo_documento, 
+                            "nd": datos.numero_documento
                         },
                     )
                 else:
@@ -639,6 +641,8 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                             "ciudad = COALESCE(NULLIF(ciudad, ''), :c), "
                             "telefono = COALESCE(NULLIF(telefono, ''), :t), "
                             "fecha_nacimiento = COALESCE(fecha_nacimiento, :f) "
+                            "tipo_documento = COALESCE(tipo_documento, :td), "
+                            "numero_documento = COALESCE(numero_documento, :nd) "
                             "WHERE usuario_id = :u"
                         ),
                         {
@@ -648,12 +652,15 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                             "c": datos.ciudad,
                             "t": datos.telefono,
                             "f": f_nac,
+                            "td": datos.tipo_documento,
+                            "nd": datos.numero_documento
                         },
                     )
                 await db.commit()
                 return {"mensaje": "Perfil actualizado", "id": existing_id}
-            except Exception:
+            except Exception as e:
                 await db.rollback()
+                print(f"Error update perfil: {e}")
                 return {"error": "No se pudo actualizar perfil"}
 
         uid = (await db.execute(
@@ -665,9 +672,9 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
             await db.execute(
                 text(
                     "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
-                    "VALUES (:u, :n, :p, :c, :t, :f)"
+                    "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd)"
                 ),
-                {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac},
+                {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac, "td": datos.tipo_documento, "nd": datos.numero_documento},
             )
         except Exception:
             pass
@@ -1354,6 +1361,7 @@ async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File
     except Exception as e:
         print(f"Error subiendo foto: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 
