@@ -1289,7 +1289,6 @@ async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPu
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
-# ENDPOINTS PARA FOTOS Y PERFIL 
 @app.get("/usuarios/perfil/{uid}")
 async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
     try:
@@ -1303,36 +1302,33 @@ async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
         # 2. Buscar el nombre real según si es cliente o conductor
         if user.role == 'cliente':
             res = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
-            if res and res.nom_apell: 
-                nombre = res.nom_apell
+            if res: nombre = res.nom_apell
         elif user.role == 'conductor':
             res = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
-            if res and res.nom_apell: 
-                nombre = res.nom_apell
+            if res: nombre = res.nom_apell
             
         # 3. Verificar si tiene foto guardada en la carpeta static
+        # Busca archivos con extensiones comunes
         for ext in ["jpg", "png", "jpeg"]:
             path_foto = f"static/perfil_{uid}.{ext}"
             if os.path.exists(path_foto):
-                # Usamos una ruta relativa simple que funciona bien con StaticFiles
+                # devolver la ruta relativa y que flutter concatene el base url
                 foto_url = f"/static/perfil_{uid}.{ext}"
                 break
 
         return {
             "id": uid, 
             "email": user.email, 
-            "nombre": nombre, # Corregido: antes decía 'nom_apel' que no existía
+            "nombre": nombre, 
             "role": user.role, 
             "foto_url": foto_url
         }
     except Exception as e:
-        print(f"Error perfil: {e}")
         return {"error": str(e)}
 
 @app.post("/usuarios/foto")
 async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File(...)):
     try:
-        # Guardar el archivo en carpeta static con nombre: perfil_123.jpg
         ext = foto.filename.split(".")[-1]
         nombre_archivo = f"perfil_{usuario_id}.{ext}"
         ruta_completa = f"static/{nombre_archivo}"
@@ -1347,7 +1343,7 @@ async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File
     except Exception as e:
         print(f"Error subiendo foto: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
-
+        
 @app.websocket("/ws/sos")
 async def ws_sos(websocket: WebSocket):
     await websocket.accept()
@@ -1359,8 +1355,10 @@ async def ws_sos(websocket: WebSocket):
         pass
     finally:
         _sos_connections.discard(websocket)
+        
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
