@@ -1341,7 +1341,6 @@ async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
             "foto_url": foto_url,
             "calificacion": promedio_calificacion,
             "conteo": conteo_calificaciones,
-            "nombre": "PRUEBA " + nombre,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1434,6 +1433,7 @@ async def ws_sos(websocket: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
