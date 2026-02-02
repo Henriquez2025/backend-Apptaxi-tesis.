@@ -1305,18 +1305,24 @@ async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
         nombre = "Usuario"
         foto_url = None
         promedio_calificacion = 5.0
+        conteo_calificaciones = 0
 
         # 2. Buscar el nombre real según si es cliente o conductor
         if user.role == 'cliente':
             res = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
             if res: nombre = res.nom_apell
             avg = (await db.execute(text("SELECT AVG(calificacion_cliente) FROM viajes WHERE cliente_id=:uid AND calificacion_cliente IS NOT NULL"), {"uid": uid})).scalar()
+            count = (await db.execute(text("SELECT COUNT(calificacion_cliente) FROM viajes WHERE cliente_id=:uid AND calificacion_cliente IS NOT NULL"), {"uid": uid})).scalar()
             if avg: promedio_calificacion = round(float(avg), 1)
+            if count: conteo_calificaciones = int(count)
+                
         elif user.role == 'conductor':
             res = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
             if res: nombre = res.nom_apell
             avg = (await db.execute(text("SELECT AVG(calificacion_conductor) FROM viajes WHERE conductor_id=:uid AND calificacion_conductor IS NOT NULL"), {"uid": uid})).scalar()
+            count = (await db.execute(text("SELECT COUNT(calificacion_conductor) FROM viajes WHERE conductor_id=:uid AND calificacion_conductor IS NOT NULL"), {"uid": uid})).scalar()
             if avg: promedio_calificacion = round(float(avg), 1)
+            if count: conteo_calificaciones = int(count)
             
         # 3. Verificar si tiene foto guardada en la carpeta static
         # Busca archivos con extensiones comunes
@@ -1334,6 +1340,7 @@ async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
             "role": user.role, 
             "foto_url": foto_url,
             "calificacion": promedio_calificacion
+            "conteo": conteo_calificaciones
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1426,6 +1433,7 @@ async def ws_sos(websocket: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
