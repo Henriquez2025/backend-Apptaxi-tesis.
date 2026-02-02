@@ -1343,7 +1343,47 @@ async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File
     except Exception as e:
         print(f"Error subiendo foto: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
-        
+# HISTORIAL DE VIAJES
+
+@app.get("/viajes/historial/cliente/{uid}")
+async def historial_cliente(uid: int, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, v.fecha_creacion,
+                   c.nom_apell as conductor, ve.placa, ve.modelo
+            FROM viajes v
+            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
+            LEFT JOIN vehiculos ve ON c.vehiculo_id = ve.id
+            WHERE v.cliente_id = :uid
+            ORDER BY v.fecha_creacion DESC
+        """)
+        res = await db.execute(query, {"uid": uid})
+        return [{
+            "id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa,
+            "estado": r.estado, "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            "otro_usuario": f"Cond: {r.conductor} ({r.modelo})" if r.conductor else "Sin conductor"
+        } for r in res.fetchall()]
+    except Exception as e: return {"error": str(e)}
+
+@app.get("/viajes/historial/conductor/{uid}")
+async def historial_conductor(uid: int, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, v.fecha_creacion,
+                   cl.nom_apell as cliente
+            FROM viajes v
+            LEFT JOIN clientes cl ON v.cliente_id = cl.usuario_id
+            WHERE v.conductor_id = :uid
+            ORDER BY v.fecha_creacion DESC
+        """)
+        res = await db.execute(query, {"uid": uid})
+        return [{
+            "id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa,
+            "estado": r.estado, "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            "otro_usuario": f"Cliente: {r.cliente}" if r.cliente else "Cliente"
+        } for r in res.fetchall()]
+    except Exception as e: return {"error": str(e)}
+
 @app.websocket("/ws/sos")
 async def ws_sos(websocket: WebSocket):
     await websocket.accept()
@@ -1355,9 +1395,10 @@ async def ws_sos(websocket: WebSocket):
         pass
     finally:
         _sos_connections.discard(websocket)
-        
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
