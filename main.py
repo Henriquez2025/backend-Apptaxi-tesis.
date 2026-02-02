@@ -1289,22 +1289,6 @@ async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPu
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
-
-@app.websocket("/ws/sos")
-async def ws_sos(websocket: WebSocket):
-    await websocket.accept()
-    _sos_connections.add(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        _sos_connections.discard(websocket)
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
 # ENDPOINTS PARA FOTOS Y PERFIL 
 @app.get("/usuarios/perfil/{uid}")
 async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
@@ -1363,6 +1347,22 @@ async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File
     except Exception as e:
         print(f"Error subiendo foto: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.websocket("/ws/sos")
+async def ws_sos(websocket: WebSocket):
+    await websocket.accept()
+    _sos_connections.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _sos_connections.discard(websocket)
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
 
 
 
