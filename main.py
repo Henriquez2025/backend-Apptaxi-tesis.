@@ -2,14 +2,13 @@ import os
 import urllib.parse
 import random
 import json
-import shutil 
+import base64
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 
 import uvicorn
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -20,7 +19,7 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACION DE BASE DE DATOS ---
+# --- CONFIGURACIÓN DE BASE DE DATOS ---
 PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID") or os.getenv("PROJECT_ID")
 SUPABASE_USER = os.getenv("SUPABASE_DB_USER") or os.getenv("DB_USER")
 SUPABASE_HOST = os.getenv("SUPABASE_DB_HOST") or os.getenv("DB_HOST") or "aws-1-sa-east-1.pooler.supabase.com"
@@ -39,14 +38,14 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 else:
     if not SUPABASE_USER or not DB_PASSWORD:
-        raise RuntimeError("Falta configuraci�n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
+        raise RuntimeError("Falta configuración de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
     encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
     DATABASE_URL = (
         f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}"
         f"@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
         "?ssl=require&prepared_statement_cache_size=0"
     )
-# Inicializacion del Motor
+# Inicialización del Motor
 engine = None
 try:
     engine = create_async_engine(
@@ -67,7 +66,7 @@ Base = declarative_base()
 
 PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
 
-# --- CONFIGURACI�N SUPABASE AUTH ---
+# --- CONFIGURACIÓN SUPABASE AUTH ---
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
 SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_SERVICE_KEY")
 DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
@@ -125,6 +124,12 @@ async def _broadcast_sos(payload: dict):
             await ws.send_json(payload)
         except Exception:
             _sos_connections.discard(ws)
+async def _file_to_b64(file: Optional[UploadFile]) -> Optional[str]:
+    if not file:
+        return None
+    data = await file.read()
+    return base64.b64encode(data).decode("ascii")
+
 # -----------------------------------------------------------------------------
 # MODELOS ORM
 # -----------------------------------------------------------------------------
@@ -157,7 +162,6 @@ class Vehiculo(Base):
     placa = Column(String, unique=True)
     color = Column(String, nullable=True)
     anio = Column(String, nullable=True)
-    foto_vehiculo = Column(String, nullable=True)
 
 class Conductor(Base):
     __tablename__ = "conductores"
@@ -170,9 +174,6 @@ class Conductor(Base):
     ubicacion = Column(Geometry('POINT', srid=4326), nullable=True)
     activo = Column(Boolean, default=False)
     cedula = Column(String, nullable=True) 
-    cedula_front = Column(String, nullable=True)
-    cedula_back = Column(String, nullable=True)
-    foto_perfil = Column(String, nullable=True)
     usuario = relationship("Usuario", back_populates="perfil_conductor")
     vehiculo = relationship("Vehiculo")
 
@@ -220,8 +221,6 @@ class Viaje(Base):
     destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
     clave_seguridad = Column(String, nullable=True)
     fecha_creacion = Column(DateTime(timezone=True), server_default=func.now())
-    calificacion_conductor = Column(Integer, nullable=True) 
-    calificacion_cliente = Column(Integer, nullable=True)  
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
@@ -248,6 +247,8 @@ class UsuarioRegistroRequest(BaseModel):
     nombre: str; email: str; password: str; role: str = "cliente"
     telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None
     pais: Optional[str] = None; ciudad: Optional[str] = None
+    tipo_documento: str | None = None
+    numero_documento: str | None = None
 
 class RegistroConductorRequest(BaseModel):
     nombre: str; email: str; password: str; telefono: str; fecha_nacimiento: str
@@ -288,18 +289,13 @@ class IniciarViajeRequest(BaseModel):
 
 class EstadoConductorPut(BaseModel):
     activo: bool
-    
-class CalificarViajeRequest(BaseModel):
-    viaje_id: int
-    rol_quien_califica: str 
-    estrellas: int 
+
 # -----------------------------------------------------------------------------
-# CONFIGURACI�N APP & ADMIN
+# CONFIGURACIÓN APP & ADMIN
 # -----------------------------------------------------------------------------
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-os.makedirs("static", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
 if engine:
     admin = Admin(app, engine, title="Taxi Admin")
     class UsuarioAdmin(ModelView, model=Usuario): column_list = [Usuario.id, Usuario.email, Usuario.role]
@@ -319,50 +315,38 @@ async def get_db():
     if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
     async with async_session() as session: yield session
 
-async def subir_archivo_supabase(archivo: UploadFile, nombre_archivo: str):
-    """Sube un archivo al bucket 'conductores' de Supabase y retorna la URL pública."""
-    if not archivo:
-        return None
-    
-    try:
-        # Leemos el archivo
-        contenido = await archivo.read()
-        
-        # Nombre único para evitar sobrescribir (ej: cedula_front_12345.jpg)
-        ruta_archivo = f"{nombre_archivo}_{random.randint(1000, 9999)}"
-        
-        # URL de subida (API REST de Supabase Storage)
-        # BUCKET: "conductores"
-        url = f"{SUPABASE_URL}/storage/v1/object/conductores/{ruta_archivo}"
-        
-        headers = {
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
-            "apikey": SUPABASE_SERVICE_ROLE,
-            "Content-Type": archivo.content_type or "application/octet-stream"
-        }
-        
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, content=contenido, headers=headers)
-            
-        # Si da error, lo imprimimos (pero no rompemos todo)
-        if resp.status_code not in (200, 201):
-            print(f"Error subiendo archivo {ruta_archivo}: {resp.status_code} - {resp.text}")
-            # Si el error es que ya existe, intentamos retornar la URL igual (o podrías retornar None)
-            # return None 
-
-        # Retornar URL Pública
-        return f"{SUPABASE_URL}/storage/v1/object/public/conductores/{ruta_archivo}"
-
-    except Exception as e:
-        print(f"Excepción subiendo archivo: {e}")
-        return None
-        
 # =============================================================================
 # ENDPOINTS API
 # =============================================================================
 
 @app.get("/")
 def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
+
+# --- LOGIN Y REGISTROS BÁSICOS ---
+
+@app.post("/login")
+async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
+        user = res.fetchone()
+        
+        if not user: return {"error": "Usuario no encontrado"}
+        if user.password_hash != datos.password: return {"error": "Contraseña incorrecta"}
+
+        nombre_real = "Usuario"
+        try:
+            if user.role == 'cliente':
+                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cli: nombre_real = res_cli.nom_apell
+            elif user.role == 'conductor':
+                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
+                if res_cond: nombre_real = res_cond.nom_apell
+        except Exception: pass
+
+        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
+    except Exception as e:
+        return {"error": f"Error interno: {str(e)}"}
+
 
 @app.get("/debug/supabase")
 async def debug_supabase():
@@ -442,47 +426,6 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         if not user:
             return {"error": "Usuario no encontrado en backend"}
 
-        # Sincroniza metadata de Supabase -> tabla clientes (solo rol cliente)
-        if user.role == "cliente":
-            meta = auth_user.get("user_metadata") or auth_user.get("raw_user_meta_data") or {}
-            nom_apell = (meta.get("nombre") or meta.get("nom_apell") or "").strip() or None
-            pais = (meta.get("pais") or "").strip() or None
-            ciudad = (meta.get("ciudad") or "").strip() or None
-            telefono = (meta.get("telefono") or meta.get("phone") or "").strip() or None
-            fecha_nac = (meta.get("fecha_nacimiento") or meta.get("fechaNacimiento") or "").strip() or None
-
-            try:
-                exists = (await db.execute(
-                    text("SELECT 1 FROM clientes WHERE usuario_id = :uid"),
-                    {"uid": user.id},
-                )).scalar()
-                if not exists:
-                    await db.execute(
-                        text(
-                            "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
-                            "VALUES (:uid, :nom, :pais, :ciudad, :tel, "
-                            "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END)"
-                        ),
-                        {"uid": user.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
-                    )
-                    await db.commit()
-                else:
-                    await db.execute(
-                        text(
-                            "UPDATE clientes SET "
-                            "nom_apell = COALESCE(nom_apell, :nom), "
-                            "pais = COALESCE(pais, :pais), "
-                            "ciudad = COALESCE(ciudad, :ciudad), "
-                            "telefono = COALESCE(telefono, :tel), "
-                            "fecha_nacimiento = COALESCE(fecha_nacimiento, "
-                            "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END) "
-                            "WHERE usuario_id = :uid"
-                        ),
-                        {"uid": user.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
-                    )
-                    await db.commit()
-            except Exception:
-                await db.rollback()
         nombre_real = "Usuario"
         try:
             if user.role == "cliente":
@@ -519,131 +462,10 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return {"error": f"Error interno: {str(e)}"}
-
-@app.post("/auth/resync_clientes")
-async def auth_resync_clientes(db: AsyncSession = Depends(get_db)):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
-        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
-
-    # 1) Cargar usuarios cliente del backend
-    res = await db.execute(text("SELECT id, email FROM usuarios WHERE role = 'cliente'"))
-    usuarios = res.fetchall()
-    if not usuarios:
-        return {"mensaje": "Sin usuarios cliente"}
-
-    # 2) Listar usuarios de Supabase Auth (admin)
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
-    }
-    page = 1
-    per_page = 1000
-    auth_by_email = {}
-
-    while True:
-        url = f"{SUPABASE_URL}/auth/v1/admin/users?page={page}&per_page={per_page}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=headers)
-        if resp.status_code != 200:
-            return {"error": f"Error listando usuarios Supabase: {resp.status_code}", "body": resp.text}
-
-        data = resp.json()
-        users = data.get("users") if isinstance(data, dict) else data
-        if not users:
-            break
-
-        for u in users:
-            email = (u.get("email") or "").lower()
-            if email:
-                auth_by_email[email] = u
-
-        if len(users) < per_page:
-            break
-        page += 1
-
-    # 3) Sincronizar metadata a clientes
-    updated = 0
-    inserted = 0
-
-    for u in usuarios:
-        email = (u.email or "").lower()
-        auth_user = auth_by_email.get(email)
-        if not auth_user:
-            continue
-
-        meta = auth_user.get("user_metadata") or auth_user.get("raw_user_meta_data") or {}
-        nom_apell = (meta.get("nombre") or meta.get("nom_apell") or "").strip() or None
-        pais = (meta.get("pais") or "").strip() or None
-        ciudad = (meta.get("ciudad") or "").strip() or None
-        telefono = (meta.get("telefono") or meta.get("phone") or "").strip() or None
-        fecha_nac = (meta.get("fecha_nacimiento") or meta.get("fechaNacimiento") or "").strip() or None
-
-        try:
-            exists = (await db.execute(
-                text("SELECT 1 FROM clientes WHERE usuario_id = :uid"),
-                {"uid": u.id},
-            )).scalar()
-
-            if not exists:
-                await db.execute(
-                    text(
-                        "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
-                        "VALUES (:uid, :nom, :pais, :ciudad, :tel, "
-                        "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END)"
-                    ),
-                    {"uid": u.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
-                )
-                inserted += 1
-            else:
-                await db.execute(
-                    text(
-                        "UPDATE clientes SET "
-                        "nom_apell = COALESCE(nom_apell, :nom), "
-                        "pais = COALESCE(pais, :pais), "
-                        "ciudad = COALESCE(ciudad, :ciudad), "
-                        "telefono = COALESCE(telefono, :tel), "
-                        "fecha_nacimiento = COALESCE(fecha_nacimiento, "
-                        "CASE WHEN :fn IS NULL OR :fn = '' THEN NULL ELSE to_date(:fn, 'YYYY-MM-DD') END) "
-                        "WHERE usuario_id = :uid"
-                    ),
-                    {"uid": u.id, "nom": nom_apell, "pais": pais, "ciudad": ciudad, "tel": telefono, "fn": fecha_nac},
-                )
-                updated += 1
-        except Exception:
-            await db.rollback()
-            continue
-
-    await db.commit()
-    return {"mensaje": "Resync completado", "inserted": inserted, "updated": updated}
-
-#LOGIN Y REGISTRO 
-@app.post("/login")
-async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
-    try:
-        res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
-        user = res.fetchone()
-        
-        if not user: return {"error": "Usuario no encontrado"}
-        if user.password_hash != datos.password: return {"error": "Contrase�a incorrecta"}
-
-        nombre_real = "Usuario"
-        try:
-            if user.role == 'cliente':
-                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
-                if res_cli: nombre_real = res_cli.nom_apell
-            elif user.role == 'conductor':
-                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
-                if res_cond: nombre_real = res_cond.nom_apell
-        except Exception: pass
-
-        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
-    except Exception as e:
-        return {"error": f"Error interno: {str(e)}"}
-        
-@app.post("/registrar_usuario")
+    
+    @app.post("/registrar_usuario")
 async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
     try:
-        #VERIFICA SI USUARIO EXISTE
         existing_id = (await db.execute(
             text("SELECT id FROM usuarios WHERE email = :e"),
             {"e": datos.email},
@@ -666,8 +488,8 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                 if not exists_cli:
                     await db.execute(
                         text(
-                            "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
-                            "VALUES (:u, :n, :p, :c, :t, :f)"
+                            "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento, tipo_documento, numero_documento) "
+                            "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd)"
                         ),
                         {
                             "u": existing_id,
@@ -676,8 +498,8 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                             "c": datos.ciudad,
                             "t": datos.telefono,
                             "f": f_nac,
-                            "td": datos.tipo_documento, 
-                            "nd": datos.numero_documento
+                            "td": datos.tipo_documento,
+                            "nd": datos.numero_documento,
                         },
                     )
                 else:
@@ -688,7 +510,7 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                             "pais = COALESCE(NULLIF(pais, ''), :p), "
                             "ciudad = COALESCE(NULLIF(ciudad, ''), :c), "
                             "telefono = COALESCE(NULLIF(telefono, ''), :t), "
-                            "fecha_nacimiento = COALESCE(fecha_nacimiento, :f) "
+                            "fecha_nacimiento = COALESCE(fecha_nacimiento, :f), "
                             "tipo_documento = COALESCE(tipo_documento, :td), "
                             "numero_documento = COALESCE(numero_documento, :nd) "
                             "WHERE usuario_id = :u"
@@ -701,14 +523,13 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                             "t": datos.telefono,
                             "f": f_nac,
                             "td": datos.tipo_documento,
-                            "nd": datos.numero_documento
+                            "nd": datos.numero_documento,
                         },
                     )
                 await db.commit()
                 return {"mensaje": "Perfil actualizado", "id": existing_id}
-            except Exception as e:
+            except Exception:
                 await db.rollback()
-                print(f"Error update perfil: {e}")
                 return {"error": "No se pudo actualizar perfil"}
 
         uid = (await db.execute(
@@ -719,10 +540,19 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
         try:
             await db.execute(
                 text(
-                    "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento) "
+                    "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento, tipo_documento, numero_documento) "
                     "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd)"
                 ),
-                {"u": uid, "n": datos.nombre, "p": datos.pais, "c": datos.ciudad, "t": datos.telefono, "f": f_nac, "td": datos.tipo_documento, "nd": datos.numero_documento},
+                {
+                    "u": uid,
+                    "n": datos.nombre,
+                    "p": datos.pais,
+                    "c": datos.ciudad,
+                    "t": datos.telefono,
+                    "f": f_nac,
+                    "td": datos.tipo_documento,
+                    "nd": datos.numero_documento,
+                },
             )
         except Exception:
             pass
@@ -733,8 +563,171 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
         await db.rollback()
         return {"error": str(e)}
 
-# --- NUEVOS ENDPOINTS PARA EL WIZARD Y FLOTAS  --- PARA EL WIZARD Y FLOTAS  ---
 
+@app.post("/registrar_usuario_fotos")
+async def registrar_usuario_fotos(
+    nombre: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    role: str = Form("cliente"),
+    telefono: Optional[str] = Form(None),
+    fecha_nacimiento: Optional[str] = Form(None),
+    pais: Optional[str] = Form(None),
+    ciudad: Optional[str] = Form(None),
+    tipo_documento: Optional[str] = Form(None),
+    numero_documento: Optional[str] = Form(None),
+    foto_cedulafrente: UploadFile = File(None),
+    foto_cedulaposterior: UploadFile = File(None),
+    foto_selfieci: UploadFile = File(None),
+    foto_pasaporte: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        f_nac = None
+        if fecha_nacimiento:
+            try:
+                f_nac = datetime.strptime(fecha_nacimiento, "%Y-%m-%d").date()
+            except Exception:
+                f_nac = None
+
+        foto_frente = await _file_to_b64(foto_cedulafrente)
+        foto_atras = await _file_to_b64(foto_cedulaposterior)
+        foto_selfie = await _file_to_b64(foto_selfieci)
+        foto_pass = await _file_to_b64(foto_pasaporte)
+
+                existing_id = (await db.execute(
+            text("SELECT id FROM usuarios WHERE email = :e"),
+            {"e": email},
+        )).scalar()
+
+        role_db = (role or "cliente").lower()
+
+        if not existing_id:
+            existing_id = (await db.execute(
+                text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
+                {"e": email, "p": password, "r": role_db},
+            )).scalar()
+
+        exists_cli = (await db.execute(
+            text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+            {"u": existing_id},
+        )).scalar()
+
+        if not exists_cli:
+            await db.execute(
+                text(
+                    "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento, tipo_documento, numero_documento, "
+                    "foto_cedulafrente, foto_cedulaposterior, foto_selfieci, foto_pasaporte) "
+                    "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd, :ff, :fa, :fs, :fp)"
+                ),
+                {
+                    "u": existing_id,
+                    "n": nombre,
+                    "p": pais,
+                    "c": ciudad,
+                    "t": telefono,
+                    "f": f_nac,
+                    "td": tipo_documento,
+                    "nd": numero_documento,
+                    "ff": foto_frente,
+                    "fa": foto_atras,
+                    "fs": foto_selfie,
+                    "fp": foto_pass,
+                },
+            )
+        else:
+            await db.execute(
+                text(
+                    "UPDATE clientes SET "
+                    "nom_apell = COALESCE(NULLIF(nom_apell, ''), :n), "
+                    "pais = COALESCE(NULLIF(pais, ''), :p), "
+                    "ciudad = COALESCE(NULLIF(ciudad, ''), :c), "
+                    "telefono = COALESCE(NULLIF(telefono, ''), :t), "
+                    "fecha_nacimiento = COALESCE(fecha_nacimiento, :f), "
+                    "tipo_documento = COALESCE(tipo_documento, :td), "
+                    "numero_documento = COALESCE(numero_documento, :nd), "
+                    "foto_cedulafrente = COALESCE(:ff, foto_cedulafrente), "
+                    "foto_cedulaposterior = COALESCE(:fa, foto_cedulaposterior), "
+                    "foto_selfieci = COALESCE(:fs, foto_selfieci), "
+                    "foto_pasaporte = COALESCE(:fp, foto_pasaporte) "
+                    "WHERE usuario_id = :u"
+                ),
+                {
+                    "u": existing_id,
+                    "n": nombre,
+                    "p": pais,
+                    "c": ciudad,
+                    "t": telefono,
+                    "f": f_nac,
+                    "td": tipo_documento,
+                    "nd": numero_documento,
+                    "ff": foto_frente,
+                    "fa": foto_atras,
+                    "fs": foto_selfie,
+                    "fp": foto_pass,
+                },
+            )
+
+        await db.commit()
+        return {"mensaje": "Registrado", "id": existing_id}
+    except Exception as e:
+        await db.rollback()
+        return {"error": str(e)}
+@app.post("/api/admin/registrar_conductor_auth")
+async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        existing_id = (await db.execute(
+            text("SELECT id FROM usuarios WHERE email = :e"),
+            {"e": datos.email},
+        )).scalar()
+        if existing_id:
+            return {"error": "El correo ya está registrado"}
+
+        vehiculo_id = (await db.execute(
+            text("SELECT id FROM vehiculos WHERE placa = :p"),
+            {"p": datos.vehiculo_placa},
+        )).scalar()
+
+        if not vehiculo_id:
+            vehiculo_id = (await db.execute(
+                text(
+                    "INSERT INTO vehiculos (marca, modelo, placa, color, anio) "
+                    "VALUES (:m, :mo, :p, :c, :a) RETURNING id"
+                ),
+                {
+                    "m": datos.vehiculo_marca,
+                    "mo": datos.vehiculo_modelo,
+                    "p": datos.vehiculo_placa,
+                    "c": datos.vehiculo_color,
+                    "a": datos.vehiculo_anio,
+                },
+            )).scalar()
+
+        uid = (await db.execute(
+            text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
+            {"e": datos.email, "p": datos.password, "r": "conductor"},
+        )).scalar()
+
+        await db.execute(
+            text(
+                "INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, cedula, activo) "
+                "VALUES (:uid, :vid, :nom, :tel, :fn, :ced, true)"
+            ),
+            {
+                "uid": uid,
+                "vid": vehiculo_id,
+                "nom": datos.nombre,
+                "tel": datos.telefono,
+                "fn": datos.fecha_nacimiento,
+                "ced": datos.cedula,
+            },
+        )
+
+        await db.commit()
+        return {"ok": True}
+    except Exception as e:
+        await db.rollback()
+        return {"error": str(e)}
 @app.get("/vehiculos/placas")
 async def obtener_lista_placas(db: AsyncSession = Depends(get_db)):
     # Retorna lista simple: ["GCA-123", "PBA-456"]
@@ -792,7 +785,7 @@ async def registrar_conductor_existente(
         vehiculo_id = res_v.scalar()
 
         if not vehiculo_id:
-            raise HTTPException(status_code=404, detail="El veh�culo no existe")
+            raise HTTPException(status_code=404, detail="El vehículo no existe")
 
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
@@ -805,7 +798,7 @@ async def registrar_conductor_existente(
         """)
         res_u = await db.execute(q_user, {
             "email": email_final, 
-            "pwd": _require_default_password(), # Contrase�a por defecto
+            "pwd": _require_default_password(),
             "role": role
         })
         new_user_id = res_u.scalar()
@@ -823,6 +816,14 @@ async def registrar_conductor_existente(
             "vid": vehiculo_id
         })
 
+        foto_front = await _file_to_b64(cedula_front)
+        foto_back = await _file_to_b64(cedula_back)
+        foto_perfil_b64 = await _file_to_b64(foto_perfil)
+        await db.execute(
+            text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp WHERE usuario_id=:uid"),
+            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "uid": new_user_id},
+        )
+
         await db.commit()
         return {"mensaje": "Conductor registrado y vinculado exitosamente"}
 
@@ -830,7 +831,6 @@ async def registrar_conductor_existente(
         await db.rollback()
         print(f"Error en registro: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/registrar_flota_completo")
 async def registrar_flota_completo(
     # Recibimos los campos de texto
@@ -845,24 +845,18 @@ async def registrar_flota_completo(
     owner_fecha_nac: str = Form(...),
     owner_telefono: str = Form(...),
     
+    # La lista de conductores extra llega como texto JSON
     conductores_extra: str = Form(default="[]"), 
 
-    # Recibimos los archivos
+    # Recibimos los archivos (pueden ser opcionales con None)
     cedula_front: UploadFile = File(None),
     cedula_back: UploadFile = File(None),
     foto_perfil: UploadFile = File(None),
-    foto_vehiculo: UploadFile = File(None), # <--- AHORA SÍ LA RECIBIMOS
+    foto_vehiculo: UploadFile = File(None),
     
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # --- SUBIR FOTOS ---
-        # Usamos la cédula como prefijo para identificar los archivos
-        url_cedula_front = await subir_archivo_supabase(cedula_front, f"{owner_cedula}_front")
-        url_cedula_back = await subir_archivo_supabase(cedula_back, f"{owner_cedula}_back")
-        url_foto_perfil = await subir_archivo_supabase(foto_perfil, f"{owner_cedula}_perfil")
-        url_foto_vehiculo = await subir_archivo_supabase(foto_vehiculo, f"{vehiculo_placa}_vehiculo")
-
         # 1. Crear el Usuario (Dueño)
         nuevo_usuario = Usuario(
             email=f"{owner_cedula}@taxis.com",
@@ -873,39 +867,54 @@ async def registrar_flota_completo(
         await db.commit()
         await db.refresh(nuevo_usuario)
 
-        # 2. Registrar Vehículo (CON FOTO)
+        # 2. Registrar Vehículo
         nuevo_auto = Vehiculo(
             placa=vehiculo_placa,
             marca=vehiculo_marca,
             modelo=vehiculo_modelo,
             color=vehiculo_color,
-            anio="2025",
-            foto_vehiculo=url_foto_vehiculo # <--- GUARDAMOS LINK
+            anio="2025" 
         )
         db.add(nuevo_auto)
         await db.commit()
         await db.refresh(nuevo_auto)
 
-        # 3. Registrar al Dueño (CON FOTOS)
+        foto_auto = await _file_to_b64(foto_vehiculo)
+        await db.execute(
+            text("UPDATE vehiculos SET foto_vehiculo=:fv WHERE id=:vid"),
+            {"fv": foto_auto, "vid": nuevo_auto.id},
+        )
+        await db.commit()
+
+        # 3. Registrar al Dueño en tabla Conductores
         nuevo_conductor = Conductor(
             usuario_id=nuevo_usuario.id,
             nom_apell=f"{owner_nombre} {owner_apellido}",
             telefono=owner_telefono,
             cedula=owner_cedula, 
             activo=True,
-            vehiculo_id=nuevo_auto.id,
-            # Guardamos los links
-            cedula_front=url_cedula_front,
-            cedula_back=url_cedula_back,
-            foto_perfil=url_foto_perfil
+            vehiculo_id=nuevo_auto.id
         )
         db.add(nuevo_conductor)
         await db.commit()
 
-        # 4. Registrar Conductores Extra (Sin cambios aquí, o puedes agregar lógica similar si suben fotos)
+        foto_front = await _file_to_b64(cedula_front)
+        foto_back = await _file_to_b64(cedula_back)
+        foto_perfil_b64 = await _file_to_b64(foto_perfil)
+        await db.execute(
+            text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp WHERE usuario_id=:uid"),
+            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "uid": nuevo_usuario.id},
+        )
+        await db.commit()
+
+        # 4. Registrar Conductores Extra
         lista_conductores = json.loads(conductores_extra) 
+        
         for extra in lista_conductores:
+            # Crear usuario para el chofer extra
+            # Generar email único si no viene
             email_extra = f"{extra['cedula']}@chofer.com"
+            
             user_chofer = Usuario(
                 email=email_extra,
                 password_hash=_require_default_password(),
@@ -929,13 +938,8 @@ async def registrar_flota_completo(
         return {"mensaje": "Flota registrada correctamente"}
 
     except Exception as e:
-        await db.rollback()
-        print(f"Error CRÍTICO en registro: {e}")
-        # Retorna el error para verlo en Flutter
+        print(f"Error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-# --- VIAJES, ALERTAS Y OTROS ---
-
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
@@ -1252,7 +1256,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
     try:
         await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
         await db.commit()
-        return {"mensaje": "Ubicaci�n OK"}
+        return {"mensaje": "Ubicación OK"}
     except: return {"error": "Error"}
 
 @app.post("/conductores/estado")
@@ -1347,189 +1351,6 @@ async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPu
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
-@app.get("/usuarios/perfil/{uid}")
-async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
-    try:
-        # 1. Buscar datos básicos del usuario
-        user = (await db.execute(text("SELECT email, role FROM usuarios WHERE id=:uid"), {"uid": uid})).fetchone()
-        if not user: return {"error": "Usuario no encontrado"}
-
-        nombre = "Usuario"
-        foto_url = None
-        promedio_calificacion = 5.0
-        conteo_calificaciones = 0
-
-        # 2. Buscar el nombre real según si es cliente o conductor
-        if user.role == 'cliente':
-            res = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
-            if res: nombre = res.nom_apell
-            avg = (await db.execute(text("SELECT AVG(calificacion_cliente) FROM viajes WHERE cliente_id=:uid AND calificacion_cliente IS NOT NULL"), {"uid": uid})).scalar()
-            count = (await db.execute(text("SELECT COUNT(calificacion_cliente) FROM viajes WHERE cliente_id=:uid AND calificacion_cliente IS NOT NULL"), {"uid": uid})).scalar()
-            if avg: promedio_calificacion = round(float(avg), 1)
-            if count: conteo_calificaciones = int(count)
-                
-        elif user.role == 'conductor':
-            res = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id=:uid"), {"uid": uid})).fetchone()
-            if res: nombre = res.nom_apell
-            avg = (await db.execute(text("SELECT AVG(calificacion_conductor) FROM viajes WHERE conductor_id=:uid AND calificacion_conductor IS NOT NULL"), {"uid": uid})).scalar()
-            count = (await db.execute(text("SELECT COUNT(calificacion_conductor) FROM viajes WHERE conductor_id=:uid AND calificacion_conductor IS NOT NULL"), {"uid": uid})).scalar()
-            if avg: promedio_calificacion = round(float(avg), 1)
-            if count: conteo_calificaciones = int(count)
-            
-        # 3. Verificar si tiene foto guardada en la carpeta static
-        # Busca archivos con extensiones comunes
-        for ext in ["jpg", "png", "jpeg"]:
-            path_foto = f"static/perfil_{uid}.{ext}"
-            if os.path.exists(path_foto):
-                # devolver la ruta relativa y que flutter concatene el base url
-                foto_url = f"https://https://backend-apptaxi-tesis-v1s0.onrender.com/static/perfil_{uid}.{ext}"
-                break
-
-        return {
-            "id": uid, 
-            "email": user.email, 
-            "nombre": nombre, 
-            "role": user.role, 
-            "foto_url": foto_url,
-            "calificacion": promedio_calificacion,
-            "conteo": conteo_calificaciones,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.post("/usuarios/foto")
-async def subir_foto_perfil(usuario_id: str = Form(...), foto: UploadFile = File(...)):
-    try:
-        ext = foto.filename.split(".")[-1]
-        nombre_archivo = f"perfil_{usuario_id}.{ext}"
-        ruta_completa = f"static/{nombre_archivo}"
-        
-        with open(ruta_completa, "wb") as buffer:
-            shutil.copyfileobj(foto.file, buffer)
-            
-        return {
-            "mensaje": "Foto actualizada", 
-            "url": f"/static/{nombre_archivo}"
-        }
-    except Exception as e:
-        print(f"Error subiendo foto: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-# HISTORIAL DE VIAJES
-
-@app.get("/viajes/historial/cliente/{uid}")
-async def historial_cliente(uid: int, db: AsyncSession = Depends(get_db)):
-    try:
-        query = text("""
-            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, v.fecha_creacion,
-                   c.nom_apell as conductor, ve.placa, ve.modelo
-            FROM viajes v
-            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
-            LEFT JOIN vehiculos ve ON c.vehiculo_id = ve.id
-            WHERE v.cliente_id = :uid
-            ORDER BY v.fecha_creacion DESC
-        """)
-        res = await db.execute(query, {"uid": uid})
-        return [{
-            "id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa,
-            "estado": r.estado, "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
-            "otro_usuario": f"Cond: {r.conductor} ({r.modelo})" if r.conductor else "Sin conductor"
-        } for r in res.fetchall()]
-    except Exception as e: return {"error": str(e)}
-
-@app.get("/viajes/historial/conductor/{uid}")
-async def historial_conductor(uid: int, db: AsyncSession = Depends(get_db)):
-    try:
-        query = text("""
-            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, v.fecha_creacion,
-                   cl.nom_apell as cliente
-            FROM viajes v
-            LEFT JOIN clientes cl ON v.cliente_id = cl.usuario_id
-            WHERE v.conductor_id = :uid
-            ORDER BY v.fecha_creacion DESC
-        """)
-        res = await db.execute(query, {"uid": uid})
-        return [{
-            "id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa,
-            "estado": r.estado, "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
-            "otro_usuario": f"Cliente: {r.cliente}" if r.cliente else "Cliente"
-        } for r in res.fetchall()]
-    except Exception as e: return {"error": str(e)}
-        
-@app.post("/viajes/calificar")
-async def calificar_viaje(d: CalificarViajeRequest, db: AsyncSession = Depends(get_db)):
-    try:
-        if d.rol_quien_califica == 'cliente':
-            await db.execute(text("UPDATE viajes SET calificacion_conductor = :s WHERE id = :vid"), 
-                             {"s": d.estrellas, "vid": d.viaje_id})
-        else:
-            await db.execute(text("UPDATE viajes SET calificacion_cliente = :s WHERE id = :vid"), 
-                             {"s": d.estrellas, "vid": d.viaje_id})
-        
-        await db.commit()
-        return {"mensaje": "Calificación guardada"}
-    except Exception as e:
-        await db.rollback()
-        return {"error": str(e)}
-        
-        @app.get("/reportes")
-async def obtener_reportes(db: AsyncSession = Depends(get_db)):
-    try:
-        # 1. Traer últimos 50 viajes
-        viajes_query = text("""
-            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado,
-                   v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
-                   c.nom_apell as pasajero, v.fecha_creacion,
-                   v.panico
-            FROM viajes v
-            LEFT JOIN clientes c ON v.cliente_id = c.usuario_id
-            ORDER BY v.fecha_creacion DESC
-            LIMIT 50
-        """)
-        viajes_res = await db.execute(viajes_query)
-        viajes = [{
-            "id": r.id,
-            "origen": r.origen,
-            "destino": r.destino,
-            "tarifa": r.tarifa,
-            "estado": r.estado,
-            "pasajero": r.pasajero or "Cliente",
-            "origen_lat": r.origen_lat,
-            "origen_lng": r.origen_lng,
-            "destino_lat": r.destino_lat,
-            "destino_lng": r.destino_lng,
-            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
-            "panico": getattr(r, "panico", False)
-        } for r in viajes_res.fetchall()]
-
-        # 2. Traer últimas 50 alertas/SOS
-        alertas_query = text("""
-            SELECT a.id, a.usuario_id, a.mensaje_extra, a.fecha_creacion
-            FROM alertas a
-            ORDER BY a.fecha_creacion DESC
-            LIMIT 50
-        """)
-        alertas_res = await db.execute(alertas_query)
-        alertas = [{
-            "id": r.id,
-            "usuario_id": r.usuario_id,
-            "mensaje": r.mensaje_extra,
-            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None
-        } for r in alertas_res.fetchall()]
-
-        # 3.
-        # emergencias_query = text("SELECT ... FROM emergencias ... LIMIT 50")
-        # emergencias_res = await db.execute(emergencias_query)
-        # emergencias = [{...} for r in emergencias_res.fetchall()]
-
-        # 4. Devolver todo en un JSON combinado
-        return {
-            "viajes": viajes,
-            "alertas": alertas,
-            # "emergencias": emergencias  # descomentar si agregas la tabla
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.websocket("/ws/sos")
 async def ws_sos(websocket: WebSocket):
@@ -1542,32 +1363,5 @@ async def ws_sos(websocket: WebSocket):
         pass
     finally:
         _sos_connections.discard(websocket)
-
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
