@@ -157,6 +157,7 @@ class Vehiculo(Base):
     placa = Column(String, unique=True)
     color = Column(String, nullable=True)
     anio = Column(String, nullable=True)
+    foto_vehiculo = Column(String, nullable=True)
 
 class Conductor(Base):
     __tablename__ = "conductores"
@@ -169,6 +170,9 @@ class Conductor(Base):
     ubicacion = Column(Geometry('POINT', srid=4326), nullable=True)
     activo = Column(Boolean, default=False)
     cedula = Column(String, nullable=True) 
+    cedula_front = Column(String, nullable=True)
+    cedula_back = Column(String, nullable=True)
+    foto_perfil = Column(String, nullable=True)
     usuario = relationship("Usuario", back_populates="perfil_conductor")
     vehiculo = relationship("Vehiculo")
 
@@ -315,6 +319,44 @@ async def get_db():
     if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
     async with async_session() as session: yield session
 
+async def subir_archivo_supabase(archivo: UploadFile, nombre_archivo: str):
+    """Sube un archivo al bucket 'conductores' de Supabase y retorna la URL pública."""
+    if not archivo:
+        return None
+    
+    try:
+        # Leemos el archivo
+        contenido = await archivo.read()
+        
+        # Nombre único para evitar sobrescribir (ej: cedula_front_12345.jpg)
+        ruta_archivo = f"{nombre_archivo}_{random.randint(1000, 9999)}"
+        
+        # URL de subida (API REST de Supabase Storage)
+        # BUCKET: "conductores"
+        url = f"{SUPABASE_URL}/storage/v1/object/conductores/{ruta_archivo}"
+        
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+            "apikey": SUPABASE_SERVICE_ROLE,
+            "Content-Type": archivo.content_type or "application/octet-stream"
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, content=contenido, headers=headers)
+            
+        # Si da error, lo imprimimos (pero no rompemos todo)
+        if resp.status_code not in (200, 201):
+            print(f"Error subiendo archivo {ruta_archivo}: {resp.status_code} - {resp.text}")
+            # Si el error es que ya existe, intentamos retornar la URL igual (o podrías retornar None)
+            # return None 
+
+        # Retornar URL Pública
+        return f"{SUPABASE_URL}/storage/v1/object/public/conductores/{ruta_archivo}"
+
+    except Exception as e:
+        print(f"Excepción subiendo archivo: {e}")
+        return None
+        
 # =============================================================================
 # ENDPOINTS API
 # =============================================================================
@@ -803,18 +845,25 @@ async def registrar_flota_completo(
     owner_fecha_nac: str = Form(...),
     owner_telefono: str = Form(...),
     
-    # La lista de conductores extra llega como texto JSON
     conductores_extra: str = Form(default="[]"), 
 
-    # Recibimos los archivos (pueden ser opcionales con None)
+    # Recibimos los archivos
     cedula_front: UploadFile = File(None),
     cedula_back: UploadFile = File(None),
     foto_perfil: UploadFile = File(None),
+    foto_vehiculo: UploadFile = File(None), # <--- AHORA SÍ LA RECIBIMOS
     
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # 1. Crear el Usuario (Due�o)
+        # --- SUBIR FOTOS ---
+        # Usamos la cédula como prefijo para identificar los archivos
+        url_cedula_front = await subir_archivo_supabase(cedula_front, f"{owner_cedula}_front")
+        url_cedula_back = await subir_archivo_supabase(cedula_back, f"{owner_cedula}_back")
+        url_foto_perfil = await subir_archivo_supabase(foto_perfil, f"{owner_cedula}_perfil")
+        url_foto_vehiculo = await subir_archivo_supabase(foto_vehiculo, f"{vehiculo_placa}_vehiculo")
+
+        # 1. Crear el Usuario (Dueño)
         nuevo_usuario = Usuario(
             email=f"{owner_cedula}@taxis.com",
             password_hash=_require_default_password(), 
@@ -824,38 +873,39 @@ async def registrar_flota_completo(
         await db.commit()
         await db.refresh(nuevo_usuario)
 
-        # 2. Registrar Veh�culo
+        # 2. Registrar Vehículo (CON FOTO)
         nuevo_auto = Vehiculo(
             placa=vehiculo_placa,
             marca=vehiculo_marca,
             modelo=vehiculo_modelo,
             color=vehiculo_color,
-            anio="2025" 
+            anio="2025",
+            foto_vehiculo=url_foto_vehiculo # <--- GUARDAMOS LINK
         )
         db.add(nuevo_auto)
         await db.commit()
         await db.refresh(nuevo_auto)
 
-        # 3. Registrar al Due�o en tabla Conductores
+        # 3. Registrar al Dueño (CON FOTOS)
         nuevo_conductor = Conductor(
             usuario_id=nuevo_usuario.id,
             nom_apell=f"{owner_nombre} {owner_apellido}",
             telefono=owner_telefono,
             cedula=owner_cedula, 
             activo=True,
-            vehiculo_id=nuevo_auto.id
+            vehiculo_id=nuevo_auto.id,
+            # Guardamos los links
+            cedula_front=url_cedula_front,
+            cedula_back=url_cedula_back,
+            foto_perfil=url_foto_perfil
         )
         db.add(nuevo_conductor)
         await db.commit()
 
-        # 4. Registrar Conductores Extra
+        # 4. Registrar Conductores Extra (Sin cambios aquí, o puedes agregar lógica similar si suben fotos)
         lista_conductores = json.loads(conductores_extra) 
-        
         for extra in lista_conductores:
-            # Crear usuario para el chofer extra
-            # Generar email �nico si no viene
             email_extra = f"{extra['cedula']}@chofer.com"
-            
             user_chofer = Usuario(
                 email=email_extra,
                 password_hash=_require_default_password(),
@@ -879,7 +929,9 @@ async def registrar_flota_completo(
         return {"mensaje": "Flota registrada correctamente"}
 
     except Exception as e:
-        print(f"Error: {e}")
+        await db.rollback()
+        print(f"Error CRÍTICO en registro: {e}")
+        # Retorna el error para verlo en Flutter
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # --- VIAJES, ALERTAS Y OTROS ---
@@ -1419,6 +1471,66 @@ async def calificar_viaje(d: CalificarViajeRequest, db: AsyncSession = Depends(g
         await db.rollback()
         return {"error": str(e)}
         
+        @app.get("/reportes")
+async def obtener_reportes(db: AsyncSession = Depends(get_db)):
+    try:
+        # 1. Traer últimos 50 viajes
+        viajes_query = text("""
+            SELECT v.id, v.origen, v.destino, v.tarifa, v.estado,
+                   v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
+                   c.nom_apell as pasajero, v.fecha_creacion,
+                   v.panico
+            FROM viajes v
+            LEFT JOIN clientes c ON v.cliente_id = c.usuario_id
+            ORDER BY v.fecha_creacion DESC
+            LIMIT 50
+        """)
+        viajes_res = await db.execute(viajes_query)
+        viajes = [{
+            "id": r.id,
+            "origen": r.origen,
+            "destino": r.destino,
+            "tarifa": r.tarifa,
+            "estado": r.estado,
+            "pasajero": r.pasajero or "Cliente",
+            "origen_lat": r.origen_lat,
+            "origen_lng": r.origen_lng,
+            "destino_lat": r.destino_lat,
+            "destino_lng": r.destino_lng,
+            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            "panico": getattr(r, "panico", False)
+        } for r in viajes_res.fetchall()]
+
+        # 2. Traer últimas 50 alertas/SOS
+        alertas_query = text("""
+            SELECT a.id, a.usuario_id, a.mensaje_extra, a.fecha_creacion
+            FROM alertas a
+            ORDER BY a.fecha_creacion DESC
+            LIMIT 50
+        """)
+        alertas_res = await db.execute(alertas_query)
+        alertas = [{
+            "id": r.id,
+            "usuario_id": r.usuario_id,
+            "mensaje": r.mensaje_extra,
+            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None
+        } for r in alertas_res.fetchall()]
+
+        # 3.
+        # emergencias_query = text("SELECT ... FROM emergencias ... LIMIT 50")
+        # emergencias_res = await db.execute(emergencias_query)
+        # emergencias = [{...} for r in emergencias_res.fetchall()]
+
+        # 4. Devolver todo en un JSON combinado
+        return {
+            "viajes": viajes,
+            "alertas": alertas,
+            # "emergencias": emergencias  # descomentar si agregas la tabla
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.websocket("/ws/sos")
 async def ws_sos(websocket: WebSocket):
     await websocket.accept()
@@ -1433,6 +1545,7 @@ async def ws_sos(websocket: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
