@@ -9,7 +9,7 @@ from typing import Optional, List
 import uvicorn
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
@@ -130,7 +130,23 @@ async def _file_to_b64(file: Optional[UploadFile]) -> Optional[str]:
     data = await file.read()
     return base64.b64encode(data).decode("ascii")
 
-# -----------------------------------------------------------------------------
+
+def _b64_to_bytes(value: Optional[str]) -> Optional[bytes]:
+    if not value:
+        return None
+    if "," in value:
+        value = value.split(",", 1)[1]
+    try:
+        return base64.b64decode(value)
+    except Exception:
+        return None
+
+def _guess_mime(data: bytes) -> str:
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return "application/octet-stream"# -----------------------------------------------------------------------------
 # MODELOS ORM
 # -----------------------------------------------------------------------------
 class Usuario(Base):
@@ -762,6 +778,94 @@ async def obtener_vehiculo_por_placa(placa: str, db: AsyncSession = Depends(get_
         print(f"Error buscando placa: {e}")
         return None
 
+
+@app.get("/vehiculos/{vehiculo_id}/foto")
+async def ver_foto_vehiculo(vehiculo_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT foto_vehiculo FROM vehiculos WHERE id = :id"),
+        {"id": vehiculo_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.foto_vehiculo if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/conductores/{usuario_id}/foto_perfil")
+async def ver_foto_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT foto_perfil FROM conductores WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.foto_perfil if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/conductores/{usuario_id}/cedula_front")
+async def ver_cedula_front_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT cedula_front FROM conductores WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.cedula_front if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/conductores/{usuario_id}/cedula_back")
+async def ver_cedula_back_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT cedula_back FROM conductores WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.cedula_back if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/clientes/{usuario_id}/foto_cedula_frente")
+async def ver_cedula_frente_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT foto_cedulafrente FROM clientes WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.foto_cedulafrente if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/clientes/{usuario_id}/foto_cedula_posterior")
+async def ver_cedula_posterior_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT foto_cedulaposterior FROM clientes WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.foto_cedulaposterior if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/clientes/{usuario_id}/foto_selfie")
+async def ver_selfie_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT foto_selfieci FROM clientes WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.foto_selfieci if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
+
+@app.get("/clientes/{usuario_id}/foto_pasaporte")
+async def ver_pasaporte_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    row = (await db.execute(
+        text("SELECT foto_pasaporte FROM clientes WHERE usuario_id = :uid"),
+        {"uid": usuario_id},
+    )).fetchone()
+    data = _b64_to_bytes(row.foto_pasaporte if row else None)
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "No encontrada"})
+    return Response(content=data, media_type=_guess_mime(data))
 @app.post("/registrar_conductor_existente")
 async def registrar_conductor_existente(
     placa_vinculada: str = Form(...),
@@ -857,14 +961,20 @@ async def registrar_flota_completo(
 ):
     try:
         # 1. Crear el Usuario (Due�o)
-        nuevo_usuario = Usuario(
-            email=f"{owner_cedula}@taxis.com",
-            password_hash=_require_default_password(), 
-            role="conductor"
-        )
-        db.add(nuevo_usuario)
-        await db.commit()
-        await db.refresh(nuevo_usuario)
+        owner_email = f"{owner_cedula}@taxis.com"
+        owner_row = (await db.execute(
+            text("SELECT id, role FROM usuarios WHERE email = :e"),
+            {"e": owner_email},
+        )).fetchone()
+        if owner_row:
+            if owner_row.role != "conductor":
+                return JSONResponse(status_code=400, content={"error": "Email ya existe con otro rol"})
+            owner_user_id = owner_row.id
+        else:
+            owner_user_id = (await db.execute(
+                text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
+                {"e": owner_email, "p": _require_default_password(), "r": "conductor"},
+            )).scalar()
 
         # 2. Registrar Veh�culo
         nuevo_auto = Vehiculo(
@@ -886,8 +996,15 @@ async def registrar_flota_completo(
         await db.commit()
 
         # 3. Registrar al Due�o en tabla Conductores
+        exists_owner_cond = (await db.execute(
+            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+            {"u": owner_user_id},
+        )).scalar()
+        if exists_owner_cond:
+            return JSONResponse(status_code=400, content={"error": "El conductor ya existe"})
+
         nuevo_conductor = Conductor(
-            usuario_id=nuevo_usuario.id,
+            usuario_id=owner_user_id,
             nom_apell=f"{owner_nombre} {owner_apellido}",
             telefono=owner_telefono,
             cedula=owner_cedula, 
@@ -902,7 +1019,7 @@ async def registrar_flota_completo(
         foto_perfil_b64 = await _file_to_b64(foto_perfil)
         await db.execute(
             text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp WHERE usuario_id=:uid"),
-            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "uid": nuevo_usuario.id},
+            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "uid": owner_user_id},
         )
         await db.commit()
 
@@ -914,17 +1031,22 @@ async def registrar_flota_completo(
             # Generar email �nico si no viene
             email_extra = f"{extra['cedula']}@chofer.com"
             
-            user_chofer = Usuario(
-                email=email_extra,
-                password_hash=_require_default_password(),
-                role="conductor"
-            )
-            db.add(user_chofer)
-            await db.commit()
-            await db.refresh(user_chofer)
+            chofer_row = (await db.execute(
+                text("SELECT id, role FROM usuarios WHERE email = :e"),
+                {"e": email_extra},
+            )).fetchone()
+            if chofer_row:
+                if chofer_row.role != "conductor":
+                    return JSONResponse(status_code=400, content={"error": f"Email ya existe con otro rol: {email_extra}"})
+                chofer_user_id = chofer_row.id
+            else:
+                chofer_user_id = (await db.execute(
+                    text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
+                    {"e": email_extra, "p": _require_default_password(), "r": "conductor"},
+                )).scalar()
 
             chofer = Conductor(
-                usuario_id=user_chofer.id,
+                usuario_id=chofer_user_id,
                 nom_apell=f"{extra['nombre']} {extra['apellido']}",
                 telefono=extra.get('telefono', '0000000000'),
                 activo=True,
@@ -939,6 +1061,8 @@ async def registrar_flota_completo(
     except Exception as e:
         print(f"Error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
@@ -1364,3 +1488,5 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
