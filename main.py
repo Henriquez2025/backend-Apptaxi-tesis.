@@ -1382,7 +1382,7 @@ async def obtener_perfil_usuario(uid: int, db: AsyncSession = Depends(get_db)):
             path_foto = f"static/perfil_{uid}.{ext}"
             if os.path.exists(path_foto):
                 # devolver la ruta relativa y que flutter concatene el base url
-                foto_url = f"https://backend-apptaxi-tesis.onrender.com/static/perfil_{uid}.{ext}"
+                foto_url = f"https://https://backend-apptaxi-tesis-v1s0.onrender.com/static/perfil_{uid}.{ext}"
                 break
 
         return {
@@ -1545,6 +1545,7 @@ async def ws_sos(websocket: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
 
