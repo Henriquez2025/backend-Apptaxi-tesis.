@@ -70,6 +70,10 @@ PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJ
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
 SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_SERVICE_KEY")
 DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
+BASE_PUBLIC_URL = (os.getenv("PUBLIC_BASE_URL") or "https://backend-apptaxi-tesis.onrender.com").rstrip("/")
+
+def _build_public_url(path: str):
+    return f"{BASE_PUBLIC_URL}{path}"
 
 def _require_default_password() -> str:
     if not DEFAULT_USER_PASSWORD:
@@ -628,12 +632,18 @@ async def registrar_usuario_fotos(
             {"u": existing_id},
         )).scalar()
 
+        foto_frente_url = _build_public_url(f"/clientes/{existing_id}/foto_cedula_frente") if foto_frente else None
+        foto_atras_url = _build_public_url(f"/clientes/{existing_id}/foto_cedula_posterior") if foto_atras else None
+        foto_selfie_url = _build_public_url(f"/clientes/{existing_id}/foto_selfie") if foto_selfie else None
+        foto_pass_url = _build_public_url(f"/clientes/{existing_id}/foto_pasaporte") if foto_pass else None
+
         if not exists_cli:
             await db.execute(
                 text(
                     "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento, tipo_documento, numero_documento, "
-                    "foto_cedulafrente, foto_cedulaposterior, foto_selfieci, foto_pasaporte) "
-                    "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd, :ff, :fa, :fs, :fp)"
+                    "foto_cedulafrente, foto_cedulaposterior, foto_selfieci, foto_pasaporte, "
+                    "foto_cedulafrente_url, foto_cedulaposterior_url, foto_selfieci_url, foto_pasaporte_url) "
+                    "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd, :ff, :fa, :fs, :fp, :ffu, :fau, :fsu, :fpu)"
                 ),
                 {
                     "u": existing_id,
@@ -648,6 +658,10 @@ async def registrar_usuario_fotos(
                     "fa": foto_atras,
                     "fs": foto_selfie,
                     "fp": foto_pass,
+                    "ffu": foto_frente_url,
+                    "fau": foto_atras_url,
+                    "fsu": foto_selfie_url,
+                    "fpu": foto_pass_url,
                 },
             )
         else:
@@ -664,7 +678,11 @@ async def registrar_usuario_fotos(
                     "foto_cedulafrente = COALESCE(:ff, foto_cedulafrente), "
                     "foto_cedulaposterior = COALESCE(:fa, foto_cedulaposterior), "
                     "foto_selfieci = COALESCE(:fs, foto_selfieci), "
-                    "foto_pasaporte = COALESCE(:fp, foto_pasaporte) "
+                    "foto_pasaporte = COALESCE(:fp, foto_pasaporte), "
+                    "foto_cedulafrente_url = COALESCE(:ffu, foto_cedulafrente_url), "
+                    "foto_cedulaposterior_url = COALESCE(:fau, foto_cedulaposterior_url), "
+                    "foto_selfieci_url = COALESCE(:fsu, foto_selfieci_url), "
+                    "foto_pasaporte_url = COALESCE(:fpu, foto_pasaporte_url) "
                     "WHERE usuario_id = :u"
                 ),
                 {
@@ -680,6 +698,10 @@ async def registrar_usuario_fotos(
                     "fa": foto_atras,
                     "fs": foto_selfie,
                     "fp": foto_pass,
+                    "ffu": foto_frente_url,
+                    "fau": foto_atras_url,
+                    "fsu": foto_selfie_url,
+                    "fpu": foto_pass_url,
                 },
             )
 
@@ -922,9 +944,12 @@ async def registrar_conductor_existente(
         foto_front = await _file_to_b64(cedula_front)
         foto_back = await _file_to_b64(cedula_back)
         foto_perfil_b64 = await _file_to_b64(foto_perfil)
+        foto_front_url = _build_public_url(f"/conductores/{new_user_id}/cedula_front") if foto_front else None
+        foto_back_url = _build_public_url(f"/conductores/{new_user_id}/cedula_back") if foto_back else None
+        foto_perfil_url = _build_public_url(f"/conductores/{new_user_id}/foto_perfil") if foto_perfil_b64 else None
         await db.execute(
-            text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp WHERE usuario_id=:uid"),
-            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "uid": new_user_id},
+            text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp, cedula_front_url=:f1u, cedula_back_url=:f2u, foto_perfil_url=:fpu WHERE usuario_id=:uid"),
+            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "f1u": foto_front_url, "f2u": foto_back_url, "fpu": foto_perfil_url, "uid": new_user_id},
         )
 
         await db.commit()
@@ -989,9 +1014,10 @@ async def registrar_flota_completo(
         await db.refresh(nuevo_auto)
 
         foto_auto = await _file_to_b64(foto_vehiculo)
+        foto_auto_url = _build_public_url(f"/vehiculos/{nuevo_auto.id}/foto") if foto_auto else None
         await db.execute(
-            text("UPDATE vehiculos SET foto_vehiculo=:fv WHERE id=:vid"),
-            {"fv": foto_auto, "vid": nuevo_auto.id},
+            text("UPDATE vehiculos SET foto_vehiculo=:fv, foto_vehiculo_url=:fvu WHERE id=:vid"),
+            {"fv": foto_auto, "fvu": foto_auto_url, "vid": nuevo_auto.id},
         )
         await db.commit()
 
@@ -1017,9 +1043,12 @@ async def registrar_flota_completo(
         foto_front = await _file_to_b64(cedula_front)
         foto_back = await _file_to_b64(cedula_back)
         foto_perfil_b64 = await _file_to_b64(foto_perfil)
+        foto_front_url = _build_public_url(f"/conductores/{owner_user_id}/cedula_front") if foto_front else None
+        foto_back_url = _build_public_url(f"/conductores/{owner_user_id}/cedula_back") if foto_back else None
+        foto_perfil_url = _build_public_url(f"/conductores/{owner_user_id}/foto_perfil") if foto_perfil_b64 else None
         await db.execute(
-            text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp WHERE usuario_id=:uid"),
-            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "uid": owner_user_id},
+            text("UPDATE conductores SET cedula_front=:f1, cedula_back=:f2, foto_perfil=:fp, cedula_front_url=:f1u, cedula_back_url=:f2u, foto_perfil_url=:fpu WHERE usuario_id=:uid"),
+            {"f1": foto_front, "f2": foto_back, "fp": foto_perfil_b64, "f1u": foto_front_url, "f2u": foto_back_url, "fpu": foto_perfil_url, "uid": owner_user_id},
         )
         await db.commit()
 
@@ -1488,5 +1517,3 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
