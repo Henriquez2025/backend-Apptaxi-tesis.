@@ -926,6 +926,13 @@ async def registrar_conductor_existente(
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
         email_final = email if email else f"{cedula}@taxis.com"
+        # Evitar duplicados
+        exists_email = (await db.execute(
+            text("SELECT 1 FROM usuarios WHERE email = :e"),
+            {"e": email_final},
+        )).scalar()
+        if exists_email:
+            return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
         supa_res = await _supabase_admin_create_user(email_final, cedula, role)
         if isinstance(supa_res, dict) and supa_res.get('error'):
             return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
@@ -1552,6 +1559,8 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
+
 
 
 
