@@ -1012,7 +1012,7 @@ async def registrar_flota_completo(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # 1. Crear el Usuario (Dueï¿½o)
+        # 1. Crear el Usuario (Dueño)
         owner_email = f"{owner_cedula}@taxis.com"
         owner_row = (await db.execute(
             text("SELECT id, role FROM usuarios WHERE email = :e"),
@@ -1051,7 +1051,7 @@ async def registrar_flota_completo(
         )
         await db.commit()
 
-        # 3. Registrar al Dueï¿½o en tabla Conductores
+        # 3. Registrar al Dueño en tabla Conductores
         exists_owner_cond = (await db.execute(
             text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
             {"u": owner_user_id},
