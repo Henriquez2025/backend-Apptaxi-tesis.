@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.sql import func
@@ -938,18 +939,22 @@ async def registrar_conductor_existente(
             return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
 
         
+        q_user = text
         q_user = text("""
             INSERT INTO usuarios (email, password_hash, role, must_change_password)
             VALUES (:email, :pwd, :role, true)
             RETURNING id
         """)
-        res_u = await db.execute(q_user, {
-            "email": email_final, 
-            "pwd": cedula,
-            "role": role
-        })
-        new_user_id = res_u.scalar()
-
+        try:
+            res_u = await db.execute(q_user, {
+                "email": email_final,
+                "pwd": cedula,
+                "role": role
+            })
+            new_user_id = res_u.scalar()
+        except IntegrityError:
+            await db.rollback()
+            return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
         # C. Crear Conductor vinculado
         q_conductor = text("""
             INSERT INTO conductores (usuario_id, nom_apell, telefono, cedula, activo, vehiculo_id)
