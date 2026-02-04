@@ -19,7 +19,7 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACI�N DE BASE DE DATOS ---
+# --- CONFIGURACIï¿½N DE BASE DE DATOS ---
 PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID") or os.getenv("PROJECT_ID")
 SUPABASE_USER = os.getenv("SUPABASE_DB_USER") or os.getenv("DB_USER")
 SUPABASE_HOST = os.getenv("SUPABASE_DB_HOST") or os.getenv("DB_HOST") or "aws-1-sa-east-1.pooler.supabase.com"
@@ -38,14 +38,14 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 else:
     if not SUPABASE_USER or not DB_PASSWORD:
-        raise RuntimeError("Falta configuraci�n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
+        raise RuntimeError("Falta configuraciï¿½n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
     encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
     DATABASE_URL = (
         f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}"
         f"@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
         "?ssl=require&prepared_statement_cache_size=0"
     )
-# Inicializaci�n del Motor
+# Inicializaciï¿½n del Motor
 engine = None
 try:
     engine = create_async_engine(
@@ -66,7 +66,7 @@ Base = declarative_base()
 
 PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
 
-# --- CONFIGURACI�N SUPABASE AUTH ---
+# --- CONFIGURACIï¿½N SUPABASE AUTH ---
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
 SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_SERVICE_KEY")
 DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
@@ -311,7 +311,7 @@ class EstadoConductorPut(BaseModel):
     activo: bool
 
 # -----------------------------------------------------------------------------
-# CONFIGURACI�N APP & ADMIN
+# CONFIGURACIï¿½N APP & ADMIN
 # -----------------------------------------------------------------------------
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -342,16 +342,16 @@ async def get_db():
 @app.get("/")
 def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
 
-# --- LOGIN Y REGISTROS B�SICOS ---
+# --- LOGIN Y REGISTROS Bï¿½SICOS ---
 
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
     try:
-        res = await db.execute(text("SELECT id, email, password_hash, role FROM usuarios WHERE email = :email"), {"email": datos.email})
+        res = await db.execute(text("SELECT id, email, password_hash, role, must_change_password FROM usuarios WHERE email = :email"), {"email": datos.email})
         user = res.fetchone()
         
         if not user: return {"error": "Usuario no encontrado"}
-        if user.password_hash != datos.password: return {"error": "Contrase�a incorrecta"}
+        if user.password_hash != datos.password: return {"error": "Contraseï¿½a incorrecta"}
 
         nombre_real = "Usuario"
         try:
@@ -363,7 +363,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
                 if res_cond: nombre_real = res_cond.nom_apell
         except Exception: pass
 
-        return {"mensaje": "Login OK", "usuario": {"id": user.id, "nombre": nombre_real, "role": user.role}}
+        return dict(mensaje='Login OK', usuario=dict(id=user.id, nombre=nombre_real, role=user.role, must_change_password=bool(user.must_change_password)))
     except Exception as e:
         return {"error": f"Error interno: {str(e)}"}
 
@@ -439,7 +439,7 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         return {"error": "UID no coincide con Supabase"}
     try:
         res = await db.execute(
-            text("SELECT id, email, role FROM usuarios WHERE email = :email"),
+            text("SELECT id, email, role, must_change_password FROM usuarios WHERE email = :email"),
             {"email": datos.email},
         )
         user = res.fetchone()
@@ -478,6 +478,7 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
                 "nombre": nombre_real,
                 "role": user.role,
                 "roles_disponibles": [user.role],
+                 'must_change_password': bool(user.must_change_password),
             }
         }
     except Exception as e:
@@ -718,7 +719,13 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
             {"e": datos.email},
         )).scalar()
         if existing_id:
-            return {"error": "El correo ya est� registrado"}
+            return {"error": "El correo ya estï¿½ registrado"}
+
+        if not datos.cedula:
+            return {"error": "Cedula requerida para clave inicial"}
+        supa_res = await _supabase_admin_create_user(datos.email, datos.cedula, "conductor")
+        if isinstance(supa_res, dict) and supa_res.get("error"):
+            return {"error": supa_res["error"]}
 
         vehiculo_id = (await db.execute(
             text("SELECT id FROM vehiculos WHERE placa = :p"),
@@ -741,8 +748,11 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
             )).scalar()
 
         uid = (await db.execute(
-            text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
-            {"e": datos.email, "p": datos.password, "r": "conductor"},
+            text(
+                "INSERT INTO usuarios (email, password_hash, role, must_change_password) "
+                "VALUES (:e, :p, :r, true) RETURNING id"
+            ),
+            {"e": datos.email, "p": datos.cedula, "r": "conductor"},
         )).scalar()
 
         await db.execute(
@@ -765,6 +775,7 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
     except Exception as e:
         await db.rollback()
         return {"error": str(e)}
+
 @app.get("/vehiculos/placas")
 async def obtener_lista_placas(db: AsyncSession = Depends(get_db)):
     # Retorna lista simple: ["GCA-123", "PBA-456"]
@@ -910,20 +921,24 @@ async def registrar_conductor_existente(
         vehiculo_id = res_v.scalar()
 
         if not vehiculo_id:
-            raise HTTPException(status_code=404, detail="El veh�culo no existe")
+            raise HTTPException(status_code=404, detail="El vehï¿½culo no existe")
 
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
         email_final = email if email else f"{cedula}@taxis.com"
+        supa_res = await _supabase_admin_create_user(email_final, cedula, role)
+        if isinstance(supa_res, dict) and supa_res.get('error'):
+            return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
+
         
         q_user = text("""
-            INSERT INTO usuarios (email, password_hash, role)
-            VALUES (:email, :pwd, :role)
+            INSERT INTO usuarios (email, password_hash, role, must_change_password)
+            VALUES (:email, :pwd, :role, true)
             RETURNING id
         """)
         res_u = await db.execute(q_user, {
             "email": email_final, 
-            "pwd": _require_default_password(),
+            "pwd": cedula,
             "role": role
         })
         new_user_id = res_u.scalar()
@@ -985,7 +1000,7 @@ async def registrar_flota_completo(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # 1. Crear el Usuario (Due�o)
+        # 1. Crear el Usuario (Dueï¿½o)
         owner_email = f"{owner_cedula}@taxis.com"
         owner_row = (await db.execute(
             text("SELECT id, role FROM usuarios WHERE email = :e"),
@@ -996,12 +1011,15 @@ async def registrar_flota_completo(
                 return JSONResponse(status_code=400, content={"error": "Email ya existe con otro rol"})
             owner_user_id = owner_row.id
         else:
+            supa_res = await _supabase_admin_create_user(owner_email, owner_cedula, "conductor")
+            if isinstance(supa_res, dict) and supa_res.get("error"):
+                return JSONResponse(status_code=400, content={"error": supa_res["error"]})
             owner_user_id = (await db.execute(
-                text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
-                {"e": owner_email, "p": _require_default_password(), "r": "conductor"},
+                text("INSERT INTO usuarios (email, password_hash, role, must_change_password) VALUES (:e, :p, :r, true) RETURNING id"),
+                {"e": owner_email, "p": owner_cedula, "r": "conductor"},
             )).scalar()
 
-        # 2. Registrar Veh�culo
+        # 2. Registrar Vehï¿½culo
         nuevo_auto = Vehiculo(
             placa=vehiculo_placa,
             marca=vehiculo_marca,
@@ -1021,7 +1039,7 @@ async def registrar_flota_completo(
         )
         await db.commit()
 
-        # 3. Registrar al Due�o en tabla Conductores
+        # 3. Registrar al Dueï¿½o en tabla Conductores
         exists_owner_cond = (await db.execute(
             text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
             {"u": owner_user_id},
@@ -1057,7 +1075,7 @@ async def registrar_flota_completo(
         
         for extra in lista_conductores:
             # Crear usuario para el chofer extra
-            # Generar email �nico si no viene
+            # Generar email ï¿½nico si no viene
             email_extra = f"{extra['cedula']}@chofer.com"
             
             chofer_row = (await db.execute(
@@ -1069,9 +1087,12 @@ async def registrar_flota_completo(
                     return JSONResponse(status_code=400, content={"error": f"Email ya existe con otro rol: {email_extra}"})
                 chofer_user_id = chofer_row.id
             else:
+                supa_res = await _supabase_admin_create_user(email_extra, extra["cedula"], "conductor")
+                if isinstance(supa_res, dict) and supa_res.get("error"):
+                    return JSONResponse(status_code=400, content={"error": supa_res["error"]})
                 chofer_user_id = (await db.execute(
-                    text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
-                    {"e": email_extra, "p": _require_default_password(), "r": "conductor"},
+                    text("INSERT INTO usuarios (email, password_hash, role, must_change_password) VALUES (:e, :p, :r, true) RETURNING id"),
+                    {"e": email_extra, "p": extra["cedula"], "r": "conductor"},
                 )).scalar()
 
             chofer = Conductor(
@@ -1408,7 +1429,7 @@ async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSessio
     try:
         await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
         await db.commit()
-        return {"mensaje": "Ubicaci�n OK"}
+        return {"mensaje": "Ubicaciï¿½n OK"}
     except: return {"error": "Error"}
 
 @app.post("/conductores/estado")
@@ -1517,3 +1538,30 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+@app.post('/usuarios/clear_password_flag')
+async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
+    try:
+        uid = d.get('usuario_id')
+        if not uid:
+            return dict(error='usuario_id requerido')
+        await db.execute(text('UPDATE usuarios SET must_change_password = false WHERE id = :uid'), dict(uid=uid))
+        await db.commit()
+        return dict(mensaje='OK')
+    except Exception as e:
+        await db.rollback()
+        return dict(error=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
