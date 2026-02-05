@@ -1033,12 +1033,13 @@ async def registrar_usuario_fotos(
 @app.post("/api/admin/registrar_conductor_auth")
 async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
+        role_db = (datos.role or "conductor").lower()
         existing_row = (await db.execute(
             text("SELECT id, role FROM usuarios WHERE email = :e"),
             {"e": datos.email},
         )).fetchone()
         if existing_row:
-            if existing_row.role != "conductor":
+            if (existing_row.role or "").lower() != "conductor":
                 return {"error": "El correo ya estï¿½ registrado"}
             exists_cond = (await db.execute(
                 text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
@@ -1074,7 +1075,7 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
         if not datos.cedula:
             return {"error": "Cedula requerida para clave inicial"}
         supa_user = None
-        supa_res = await _supabase_admin_create_user(datos.email, datos.cedula, "conductor")
+        supa_res = await _supabase_admin_create_user(datos.email, datos.cedula, role_db)
         if isinstance(supa_res, dict) and supa_res.get("error"):
             err_msg = str(supa_res.get("error"))
             if _is_supabase_user_exists_error(err_msg):
@@ -1109,7 +1110,7 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
                 "INSERT INTO usuarios (email, password_hash, role, must_change_password) "
                 "VALUES (:e, :p, :r, true) RETURNING id"
             ),
-            {"e": datos.email, "p": datos.cedula, "r": "conductor"},
+            {"e": datos.email, "p": datos.cedula, "r": role_db},
         )).scalar()
         try:
             if isinstance(supa_user, dict) and supa_user.get("id"):
@@ -1248,6 +1249,7 @@ async def registrar_conductor_existente(
     db: AsyncSession = Depends(get_db)
 ):
     try:
+        role_db = (role or "conductor").lower()
         # A. Verificar Auto
         q_vehiculo = text("SELECT id FROM vehiculos WHERE placa = :placa")
         res_v = await db.execute(q_vehiculo, {"placa": placa_vinculada})
@@ -1272,12 +1274,12 @@ async def registrar_conductor_existente(
         )).fetchone()
 
         if existing_row:
-            if existing_row.role != "conductor":
+            if (existing_row.role or "").lower() != "conductor":
                 return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
             new_user_id = existing_row.id
         else:
             supa_user = None
-            supa_res = await _supabase_admin_create_user(email_final, cedula, role)
+            supa_res = await _supabase_admin_create_user(email_final, cedula, role_db)
             if isinstance(supa_res, dict) and supa_res.get('error'):
                 err_msg = str(supa_res.get("error"))
                 if _is_supabase_user_exists_error(err_msg):
@@ -1296,7 +1298,7 @@ async def registrar_conductor_existente(
                 res_u = await db.execute(q_user, {
                     "email": email_final,
                     "pwd": cedula,
-                    "role": role
+                    "role": role_db
                 })
                 new_user_id = res_u.scalar()
             except IntegrityError:
