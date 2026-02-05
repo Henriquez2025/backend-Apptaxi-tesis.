@@ -1195,7 +1195,7 @@ async def registrar_flota_completo(
         
         for extra in lista_conductores:
             # Crear usuario para el chofer extra
-            # Generar email ï¿½nico si no viene
+            # Generar email único si no viene
             email_extra = f"{extra['cedula']}@chofer.com"
             
             chofer_row = (await db.execute(
@@ -1672,5 +1672,18 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
