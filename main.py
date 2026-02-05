@@ -1306,7 +1306,15 @@ async def registrar_conductor_existente(
                 new_user_id = res_u.scalar()
             except IntegrityError:
                 await db.rollback()
-                return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+                existing_dup = (await db.execute(
+                    text("SELECT id, role FROM usuarios WHERE email = :e"),
+                    {"e": email_final},
+                )).fetchone()
+                if not existing_dup:
+                    return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+                if (existing_dup.role or "").lower() != "conductor":
+                    return JSONResponse(status_code=400, content={"error": "El correo ya existe con otro rol"})
+                new_user_id = existing_dup.id
             try:
                 if isinstance(supa_user, dict) and supa_user.get("id"):
                     await db.execute(
@@ -2167,5 +2175,18 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
