@@ -1033,10 +1033,13 @@ async def registrar_usuario_fotos(
 @app.post("/api/admin/registrar_conductor_auth")
 async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
+        email_norm = (datos.email or "").strip().lower()
+        if not email_norm:
+            return {"error": "Correo requerido"}
         role_db = (datos.role or "conductor").lower()
         existing_row = (await db.execute(
             text("SELECT id, role FROM usuarios WHERE email = :e"),
-            {"e": datos.email},
+            {"e": email_norm},
         )).fetchone()
         if existing_row:
             if (existing_row.role or "").lower() != "conductor":
@@ -1075,7 +1078,7 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
         if not datos.cedula:
             return {"error": "Cedula requerida para clave inicial"}
         supa_user = None
-        supa_res = await _supabase_admin_create_user(datos.email, datos.cedula, role_db)
+        supa_res = await _supabase_admin_create_user(email_norm, datos.cedula, role_db)
         if isinstance(supa_res, dict) and supa_res.get("error"):
             err_msg = str(supa_res.get("error"))
             if _is_supabase_user_exists_error(err_msg):
@@ -1110,7 +1113,7 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
                 "INSERT INTO usuarios (email, password_hash, role, must_change_password) "
                 "VALUES (:e, :p, :r, true) RETURNING id"
             ),
-            {"e": datos.email, "p": datos.cedula, "r": role_db},
+            {"e": email_norm, "p": datos.cedula, "r": role_db},
         )).scalar()
         try:
             if isinstance(supa_user, dict) and supa_user.get("id"):
@@ -1267,7 +1270,7 @@ async def registrar_conductor_existente(
 
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
-        email_final = email if email else f"{cedula}@taxis.com"
+        email_final = (email or f"{cedula}@taxis.com").strip().lower()
         existing_row = (await db.execute(
             text("SELECT id, role FROM usuarios WHERE email = :e"),
             {"e": email_final},
@@ -2164,18 +2167,5 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
