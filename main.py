@@ -347,6 +347,13 @@ class AuthSyncRequest(BaseModel):
     email: str
     supabase_uid: str
     access_token: Optional[str] = None
+    nombre: Optional[str] = None
+    telefono: Optional[str] = None
+    fecha_nacimiento: Optional[str] = None
+    pais: Optional[str] = None
+    ciudad: Optional[str] = None
+    tipo_documento: Optional[str] = None
+    numero_documento: Optional[str] = None
 
 class ViajeRequest(BaseModel):
     usuario_id: int; origen: str; destino: str; tarifa: float
@@ -650,6 +657,13 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
     if auth_id and auth_id != datos.supabase_uid:
         return {"error": "UID no coincide con Supabase"}
     try:
+        f_nac = None
+        if datos.fecha_nacimiento:
+            try:
+                f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
+            except Exception:
+                f_nac = None
+
         res = await db.execute(
             text("SELECT id, email, role, must_change_password FROM usuarios WHERE email = :email"),
             {"email": datos.email},
@@ -666,12 +680,50 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
                 )).scalar()
                 if not exists_cli:
                     meta = auth_user.get("user_metadata") or {}
-                    nombre_meta = meta.get("nombre") or meta.get("name") or "Cliente"
+                    nombre_meta = datos.nombre or meta.get("nombre") or meta.get("name") or "Cliente"
                     await db.execute(
-                        text("INSERT INTO clientes (usuario_id, nom_apell) VALUES (:u, :n)"),
-                        {"u": user.id, "n": nombre_meta},
+                        text(
+                            "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento, tipo_documento, numero_documento) "
+                            "VALUES (:u, :n, :p, :c, :t, :f, :td, :nd)"
+                        ),
+                        {
+                            "u": user.id,
+                            "n": nombre_meta,
+                            "p": datos.pais,
+                            "c": datos.ciudad,
+                            "t": datos.telefono,
+                            "f": f_nac,
+                            "td": datos.tipo_documento,
+                            "nd": datos.numero_documento,
+                        },
                     )
                     await db.commit()
+                else:
+                    if any([datos.nombre, datos.pais, datos.ciudad, datos.telefono, datos.fecha_nacimiento, datos.tipo_documento, datos.numero_documento]):
+                        await db.execute(
+                            text(
+                                "UPDATE clientes SET "
+                                "nom_apell = COALESCE(NULLIF(:n, ''), nom_apell), "
+                                "pais = COALESCE(NULLIF(:p, ''), pais), "
+                                "ciudad = COALESCE(NULLIF(:c, ''), ciudad), "
+                                "telefono = COALESCE(NULLIF(:t, ''), telefono), "
+                                "fecha_nacimiento = COALESCE(:f, fecha_nacimiento), "
+                                "tipo_documento = COALESCE(NULLIF(:td, ''), tipo_documento), "
+                                "numero_documento = COALESCE(NULLIF(:nd, ''), numero_documento) "
+                                "WHERE usuario_id = :u"
+                            ),
+                            {
+                                "u": user.id,
+                                "n": datos.nombre,
+                                "p": datos.pais,
+                                "c": datos.ciudad,
+                                "t": datos.telefono,
+                                "f": f_nac,
+                                "td": datos.tipo_documento,
+                                "nd": datos.numero_documento,
+                            },
+                        )
+                        await db.commit()
             except Exception:
                 await db.rollback()
 
@@ -2067,3 +2119,4 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
