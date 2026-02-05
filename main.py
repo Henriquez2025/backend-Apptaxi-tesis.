@@ -138,6 +138,35 @@ async def _supabase_admin_update_user(user_id: str, payload: dict):
         return {"error": msg}
     return resp.json()
 
+def _is_supabase_user_exists_error(msg: str) -> bool:
+    if not msg:
+        return False
+    m = msg.lower()
+    return ("already" in m) or ("exists" in m) or ("registered" in m) or ("duplicate" in m)
+
+async def _supabase_admin_get_user_by_email(email: str) -> Optional[dict]:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return None
+    url = f"{SUPABASE_URL}/auth/v1/admin/users"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+    }
+    params = {"email": email}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url, headers=headers, params=params)
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    if isinstance(data, list) and data:
+        return data[0]
+    if isinstance(data, dict) and data.get("id"):
+        return data
+    return None
+
 
 _sos_connections = set()
 
@@ -1044,9 +1073,16 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
 
         if not datos.cedula:
             return {"error": "Cedula requerida para clave inicial"}
+        supa_user = None
         supa_res = await _supabase_admin_create_user(datos.email, datos.cedula, "conductor")
         if isinstance(supa_res, dict) and supa_res.get("error"):
-            return {"error": supa_res["error"]}
+            err_msg = str(supa_res.get("error"))
+            if _is_supabase_user_exists_error(err_msg):
+                supa_user = await _supabase_admin_get_user_by_email(datos.email)
+            else:
+                return {"error": supa_res["error"]}
+        else:
+            supa_user = supa_res
 
         vehiculo_id = (await db.execute(
             text("SELECT id FROM vehiculos WHERE placa = :p"),
@@ -1076,10 +1112,10 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
             {"e": datos.email, "p": datos.cedula, "r": "conductor"},
         )).scalar()
         try:
-            if isinstance(supa_res, dict) and supa_res.get("id"):
+            if isinstance(supa_user, dict) and supa_user.get("id"):
                 await db.execute(
                     text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
-                    {"suid": supa_res.get("id"), "uid": uid},
+                    {"suid": supa_user.get("id"), "uid": uid},
                 )
         except Exception:
             pass
@@ -1240,9 +1276,16 @@ async def registrar_conductor_existente(
                 return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
             new_user_id = existing_row.id
         else:
+            supa_user = None
             supa_res = await _supabase_admin_create_user(email_final, cedula, role)
             if isinstance(supa_res, dict) and supa_res.get('error'):
-                return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
+                err_msg = str(supa_res.get("error"))
+                if _is_supabase_user_exists_error(err_msg):
+                    supa_user = await _supabase_admin_get_user_by_email(email_final)
+                else:
+                    return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
+            else:
+                supa_user = supa_res
 
             q_user = text("""
                 INSERT INTO usuarios (email, password_hash, role, must_change_password)
@@ -1260,10 +1303,10 @@ async def registrar_conductor_existente(
                 await db.rollback()
                 return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
             try:
-                if isinstance(supa_res, dict) and supa_res.get("id"):
+                if isinstance(supa_user, dict) and supa_user.get("id"):
                     await db.execute(
                         text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
-                        {"suid": supa_res.get("id"), "uid": new_user_id},
+                        {"suid": supa_user.get("id"), "uid": new_user_id},
                     )
             except Exception:
                 pass
@@ -2119,4 +2162,18 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
