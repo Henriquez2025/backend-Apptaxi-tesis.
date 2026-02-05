@@ -1695,7 +1695,8 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text("""
             SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id,
-                   u.email, c.cedula, c.fecha_nacimiento
+                   u.email, c.cedula, c.fecha_nacimiento,
+                   c.foto_perfil_url, c.cedula_front_url, c.cedula_back_url
             FROM conductores c
             JOIN vehiculos v ON c.vehiculo_id = v.id
             JOIN usuarios u ON c.usuario_id = u.id
@@ -1711,7 +1712,10 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
             "placa": r.placa,
             "email": r.email,
             "cedula": r.cedula,
-            "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None
+            "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None,
+            "foto_perfil_url": r.foto_perfil_url,
+            "cedula_front_url": r.cedula_front_url,
+            "cedula_back_url": r.cedula_back_url,
         } for r in res.fetchall()]
     except Exception as e: return []
 
@@ -1938,3 +1942,18 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
