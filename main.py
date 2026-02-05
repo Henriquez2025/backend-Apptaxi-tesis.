@@ -1102,6 +1102,13 @@ async def registrar_conductor_existente(
         if not vehiculo_id:
             raise HTTPException(status_code=404, detail="El vehï¿½culo no existe")
 
+        f_nac = None
+        if fecha_nacimiento:
+            try:
+                f_nac = datetime.strptime(fecha_nacimiento, "%Y-%m-%d").date()
+            except Exception:
+                f_nac = None
+
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
         email_final = email if email else f"{cedula}@taxis.com"
@@ -1150,16 +1157,37 @@ async def registrar_conductor_existente(
         )).scalar()
         if not exists_cond:
             q_conductor = text("""
-                INSERT INTO conductores (usuario_id, nom_apell, telefono, cedula, activo, vehiculo_id)
-                VALUES (:uid, :nombre, :telf, :ced, true, :vid)
+                INSERT INTO conductores (usuario_id, nom_apell, telefono, fecha_nacimiento, cedula, activo, vehiculo_id)
+                VALUES (:uid, :nombre, :telf, :fn, :ced, true, :vid)
             """)
             await db.execute(q_conductor, {
                 "uid": new_user_id,
                 "nombre": f"{nombre} {apellido}",
                 "telf": telefono,
+                "fn": f_nac,
                 "ced": cedula,
                 "vid": vehiculo_id
             })
+        else:
+            await db.execute(
+                text(
+                    "UPDATE conductores SET "
+                    "nom_apell = COALESCE(NULLIF(nom_apell, ''), :nombre), "
+                    "telefono = COALESCE(NULLIF(telefono, ''), :telf), "
+                    "fecha_nacimiento = COALESCE(fecha_nacimiento, :fn), "
+                    "cedula = COALESCE(NULLIF(cedula, ''), :ced), "
+                    "vehiculo_id = COALESCE(vehiculo_id, :vid) "
+                    "WHERE usuario_id = :uid"
+                ),
+                {
+                    "uid": new_user_id,
+                    "nombre": f"{nombre} {apellido}",
+                    "telf": telefono,
+                    "fn": f_nac,
+                    "ced": cedula,
+                    "vid": vehiculo_id,
+                },
+            )
 
         foto_front = await _file_to_b64(cedula_front)
         foto_back = await _file_to_b64(cedula_back)
@@ -1910,18 +1938,3 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
