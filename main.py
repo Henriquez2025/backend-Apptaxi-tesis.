@@ -1,4 +1,4 @@
-﻿import os
+import os
 import urllib.parse
 import random
 import json
