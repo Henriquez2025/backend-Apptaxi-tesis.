@@ -118,6 +118,26 @@ async def _supabase_admin_delete_user(user_id: str):
     async with httpx.AsyncClient(timeout=15) as client:
         await client.delete(url, headers=headers)
 
+async def _supabase_admin_update_user(user_id: str, payload: dict):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
+    url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.patch(url, headers=headers, json=payload)
+    if resp.status_code not in (200, 201):
+        try:
+            body = resp.json()
+            msg = body.get("msg") or body.get("message") or body.get("error") or str(body)
+        except Exception:
+            msg = resp.text or f"HTTP {resp.status_code}"
+        return {"error": msg}
+    return resp.json()
+
 
 _sos_connections = set()
 
@@ -310,6 +330,17 @@ class IniciarViajeRequest(BaseModel):
 
 class EstadoConductorPut(BaseModel):
     activo: bool
+
+class AdminConductorUpdateRequest(BaseModel):
+    usuario_id: int
+    email: Optional[str] = None
+    nombre: Optional[str] = None
+    telefono: Optional[str] = None
+    fecha_nacimiento: Optional[str] = None
+    cedula: Optional[str] = None
+    activo: Optional[bool] = None
+    vehiculo_placa: Optional[str] = None
+    password: Optional[str] = None
 
 # -----------------------------------------------------------------------------
 # CONFIGURACIï¿½N APP & ADMIN
@@ -823,12 +854,43 @@ async def registrar_usuario_fotos(
 @app.post("/api/admin/registrar_conductor_auth")
 async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
     try:
-        existing_id = (await db.execute(
-            text("SELECT id FROM usuarios WHERE email = :e"),
+        existing_row = (await db.execute(
+            text("SELECT id, role FROM usuarios WHERE email = :e"),
             {"e": datos.email},
-        )).scalar()
-        if existing_id:
-            return {"error": "El correo ya estï¿½ registrado"}
+        )).fetchone()
+        if existing_row:
+            if existing_row.role != "conductor":
+                return {"error": "El correo ya estï¿½ registrado"}
+            exists_cond = (await db.execute(
+                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                {"u": existing_row.id},
+            )).scalar()
+            if exists_cond:
+                return {"ok": True, "mensaje": "Conductor ya existente"}
+
+            vehiculo_id = (await db.execute(
+                text("SELECT id FROM vehiculos WHERE placa = :p"),
+                {"p": datos.vehiculo_placa},
+            )).scalar()
+            if not vehiculo_id:
+                return {"error": "Vehï¿½culo no encontrado"}
+
+            await db.execute(
+                text(
+                    "INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, cedula, activo) "
+                    "VALUES (:uid, :vid, :nom, :tel, :fn, :ced, true)"
+                ),
+                {
+                    "uid": existing_row.id,
+                    "vid": vehiculo_id,
+                    "nom": datos.nombre,
+                    "tel": datos.telefono,
+                    "fn": datos.fecha_nacimiento,
+                    "ced": datos.cedula,
+                },
+            )
+            await db.commit()
+            return {"ok": True, "mensaje": "Conductor creado para usuario existente"}
 
         if not datos.cedula:
             return {"error": "Cedula requerida para clave inicial"}
@@ -863,6 +925,14 @@ async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSes
             ),
             {"e": datos.email, "p": datos.cedula, "r": "conductor"},
         )).scalar()
+        try:
+            if isinstance(supa_res, dict) and supa_res.get("id"):
+                await db.execute(
+                    text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
+                    {"suid": supa_res.get("id"), "uid": uid},
+                )
+        except Exception:
+            pass
 
         await db.execute(
             text(
@@ -1035,46 +1105,61 @@ async def registrar_conductor_existente(
         # B. Crear Usuario
         # Usamos el email que viene del form, o generamos uno si no viene
         email_final = email if email else f"{cedula}@taxis.com"
-        # Evitar duplicados
-        exists_email = (await db.execute(
-            text("SELECT 1 FROM usuarios WHERE email = :e"),
+        existing_row = (await db.execute(
+            text("SELECT id, role FROM usuarios WHERE email = :e"),
             {"e": email_final},
-        )).scalar()
-        if exists_email:
-            return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
-        supa_res = await _supabase_admin_create_user(email_final, cedula, role)
-        if isinstance(supa_res, dict) and supa_res.get('error'):
-            return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
+        )).fetchone()
 
-        
-        q_user = text
-        q_user = text("""
-            INSERT INTO usuarios (email, password_hash, role, must_change_password)
-            VALUES (:email, :pwd, :role, true)
-            RETURNING id
-        """)
-        try:
-            res_u = await db.execute(q_user, {
-                "email": email_final,
-                "pwd": cedula,
-                "role": role
+        if existing_row:
+            if existing_row.role != "conductor":
+                return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+            new_user_id = existing_row.id
+        else:
+            supa_res = await _supabase_admin_create_user(email_final, cedula, role)
+            if isinstance(supa_res, dict) and supa_res.get('error'):
+                return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
+
+            q_user = text("""
+                INSERT INTO usuarios (email, password_hash, role, must_change_password)
+                VALUES (:email, :pwd, :role, true)
+                RETURNING id
+            """)
+            try:
+                res_u = await db.execute(q_user, {
+                    "email": email_final,
+                    "pwd": cedula,
+                    "role": role
+                })
+                new_user_id = res_u.scalar()
+            except IntegrityError:
+                await db.rollback()
+                return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+            try:
+                if isinstance(supa_res, dict) and supa_res.get("id"):
+                    await db.execute(
+                        text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
+                        {"suid": supa_res.get("id"), "uid": new_user_id},
+                    )
+            except Exception:
+                pass
+
+        # C. Crear Conductor vinculado (si no existe)
+        exists_cond = (await db.execute(
+            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+            {"u": new_user_id},
+        )).scalar()
+        if not exists_cond:
+            q_conductor = text("""
+                INSERT INTO conductores (usuario_id, nom_apell, telefono, cedula, activo, vehiculo_id)
+                VALUES (:uid, :nombre, :telf, :ced, true, :vid)
+            """)
+            await db.execute(q_conductor, {
+                "uid": new_user_id,
+                "nombre": f"{nombre} {apellido}",
+                "telf": telefono,
+                "ced": cedula,
+                "vid": vehiculo_id
             })
-            new_user_id = res_u.scalar()
-        except IntegrityError:
-            await db.rollback()
-            return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
-        # C. Crear Conductor vinculado
-        q_conductor = text("""
-            INSERT INTO conductores (usuario_id, nom_apell, telefono, cedula, activo, vehiculo_id)
-            VALUES (:uid, :nombre, :telf, :ced, true, :vid)
-        """)
-        await db.execute(q_conductor, {
-            "uid": new_user_id,
-            "nombre": f"{nombre} {apellido}",
-            "telf": telefono,
-            "ced": cedula,
-            "vid": vehiculo_id
-        })
 
         foto_front = await _file_to_b64(cedula_front)
         foto_back = await _file_to_b64(cedula_back)
@@ -1581,7 +1666,8 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
 async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text("""
-            SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id
+            SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id,
+                   u.email, c.cedula, c.fecha_nacimiento
             FROM conductores c
             JOIN vehiculos v ON c.vehiculo_id = v.id
             JOIN usuarios u ON c.usuario_id = u.id
@@ -1594,7 +1680,10 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
             "nombre": r.nom_apell,      
             "telefono": r.telefono, 
             "activo": r.activo,
-            "placa": r.placa
+            "placa": r.placa,
+            "email": r.email,
+            "cedula": r.cedula,
+            "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None
         } for r in res.fetchall()]
     except Exception as e: return []
 
@@ -1644,6 +1733,155 @@ async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPu
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
+@app.put("/admin/conductores/actualizar")
+async def admin_actualizar_conductor(d: AdminConductorUpdateRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        user = (await db.execute(
+            text("SELECT id, email, role, supabase_uid FROM usuarios WHERE id = :uid"),
+            {"uid": d.usuario_id},
+        )).fetchone()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "Usuario no encontrado"})
+        if user.role != "conductor":
+            return JSONResponse(status_code=400, content={"error": "El usuario no es conductor"})
+
+        if d.email and d.email != user.email:
+            exists_email = (await db.execute(
+                text("SELECT 1 FROM usuarios WHERE email = :e AND id <> :uid"),
+                {"e": d.email, "uid": d.usuario_id},
+            )).scalar()
+            if exists_email:
+                return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+            if user.supabase_uid:
+                supa_res = await _supabase_admin_update_user(user.supabase_uid, {"email": d.email})
+                if isinstance(supa_res, dict) and supa_res.get("error"):
+                    return JSONResponse(status_code=400, content={"error": supa_res["error"]})
+            await db.execute(
+                text("UPDATE usuarios SET email = :e WHERE id = :uid"),
+                {"e": d.email, "uid": d.usuario_id},
+            )
+
+        if d.password:
+            if not user.supabase_uid:
+                return JSONResponse(status_code=400, content={"error": "No se pudo cambiar la clave (supabase_uid vacï¿½o)"})
+            supa_res = await _supabase_admin_update_user(user.supabase_uid, {"password": d.password})
+            if isinstance(supa_res, dict) and supa_res.get("error"):
+                return JSONResponse(status_code=400, content={"error": supa_res["error"]})
+            await db.execute(
+                text("UPDATE usuarios SET password_hash = :p, must_change_password = false WHERE id = :uid"),
+                {"p": d.password, "uid": d.usuario_id},
+            )
+
+        vehiculo_id = None
+        if d.vehiculo_placa:
+            vehiculo_id = (await db.execute(
+                text("SELECT id FROM vehiculos WHERE placa = :p"),
+                {"p": d.vehiculo_placa},
+            )).scalar()
+            if not vehiculo_id:
+                return JSONResponse(status_code=400, content={"error": "Vehï¿½culo no encontrado"})
+
+        cond_exists = (await db.execute(
+            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+            {"u": d.usuario_id},
+        )).scalar()
+
+        if not cond_exists:
+            await db.execute(
+                text(
+                    "INSERT INTO conductores (usuario_id, nom_apell, telefono, fecha_nacimiento, cedula, activo, vehiculo_id) "
+                    "VALUES (:uid, :nom, :tel, :fn, :ced, :act, :vid)"
+                ),
+                {
+                    "uid": d.usuario_id,
+                    "nom": d.nombre or "Conductor",
+                    "tel": d.telefono,
+                    "fn": d.fecha_nacimiento,
+                    "ced": d.cedula,
+                    "act": d.activo if d.activo is not None else True,
+                    "vid": vehiculo_id,
+                },
+            )
+        else:
+            await db.execute(
+                text(
+                    "UPDATE conductores SET "
+                    "nom_apell = COALESCE(:nom, nom_apell), "
+                    "telefono = COALESCE(:tel, telefono), "
+                    "fecha_nacimiento = COALESCE(:fn, fecha_nacimiento), "
+                    "cedula = COALESCE(:ced, cedula), "
+                    "activo = COALESCE(:act, activo), "
+                    "vehiculo_id = COALESCE(:vid, vehiculo_id) "
+                    "WHERE usuario_id = :uid"
+                ),
+                {
+                    "uid": d.usuario_id,
+                    "nom": d.nombre,
+                    "tel": d.telefono,
+                    "fn": d.fecha_nacimiento,
+                    "ced": d.cedula,
+                    "act": d.activo,
+                    "vid": vehiculo_id,
+                },
+            )
+
+        await db.commit()
+        return {"ok": True}
+    except Exception as e:
+        await db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/admin/conductores/fotos")
+async def admin_actualizar_fotos_conductor(
+    usuario_id: int = Form(...),
+    foto_perfil: UploadFile = File(None),
+    cedula_front: UploadFile = File(None),
+    cedula_back: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        exists_cond = (await db.execute(
+            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+            {"u": usuario_id},
+        )).scalar()
+        if not exists_cond:
+            return JSONResponse(status_code=404, content={"error": "Conductor no encontrado"})
+
+        foto_perfil_b64 = await _file_to_b64(foto_perfil)
+        cedula_front_b64 = await _file_to_b64(cedula_front)
+        cedula_back_b64 = await _file_to_b64(cedula_back)
+
+        foto_perfil_url = _build_public_url(f"/conductores/{usuario_id}/foto_perfil") if foto_perfil_b64 else None
+        cedula_front_url = _build_public_url(f"/conductores/{usuario_id}/cedula_front") if cedula_front_b64 else None
+        cedula_back_url = _build_public_url(f"/conductores/{usuario_id}/cedula_back") if cedula_back_b64 else None
+
+        await db.execute(
+            text(
+                "UPDATE conductores SET "
+                "foto_perfil = COALESCE(:fp, foto_perfil), "
+                "cedula_front = COALESCE(:cf, cedula_front), "
+                "cedula_back = COALESCE(:cb, cedula_back), "
+                "foto_perfil_url = COALESCE(:fpu, foto_perfil_url), "
+                "cedula_front_url = COALESCE(:cfu, cedula_front_url), "
+                "cedula_back_url = COALESCE(:cbu, cedula_back_url) "
+                "WHERE usuario_id = :uid"
+            ),
+            {
+                "uid": usuario_id,
+                "fp": foto_perfil_b64,
+                "cf": cedula_front_b64,
+                "cb": cedula_back_b64,
+                "fpu": foto_perfil_url,
+                "cfu": cedula_front_url,
+                "cbu": cedula_back_url,
+            },
+        )
+        await db.commit()
+        return {"ok": True}
+    except Exception as e:
+        await db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 @app.websocket("/ws/sos")
 async def ws_sos(websocket: WebSocket):
@@ -1672,6 +1910,17 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
+
+
+
+
+
+
+
+
+
+
+
 
 
 
