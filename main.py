@@ -173,61 +173,75 @@ def _guess_mime(data: bytes) -> str:
         return "image/png"
     return "application/octet-stream"
 
-MEDIA_ROOT = os.getenv("MEDIA_ROOT") or os.path.join(os.path.dirname(__file__), "media")
-MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bin")
+# --- SUPABASE STORAGE (PUBLIC BUCKET) ---
+SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET") or "taxi-media"
+_STORAGE_READY = False
 
-def _media_path(*parts: str) -> str:
-    return os.path.join(MEDIA_ROOT, *parts)
+async def _ensure_storage_bucket():
+    global _STORAGE_READY
+    if _STORAGE_READY:
+        return
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/storage/v1/bucket/{SUPABASE_STORAGE_BUCKET}",
+            headers=headers,
+        )
+        if resp.status_code == 404:
+            payload = {"id": SUPABASE_STORAGE_BUCKET, "name": SUPABASE_STORAGE_BUCKET, "public": True}
+            await client.post(
+                f"{SUPABASE_URL}/storage/v1/bucket",
+                headers=headers,
+                json=payload,
+            )
+        elif resp.status_code not in (200, 201):
+            return
+    _STORAGE_READY = True
 
-def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-
-def _guess_ext(file: Optional[UploadFile]) -> str:
+async def _storage_upload(path: str, file: Optional[UploadFile]) -> bool:
     if not file:
-        return ".bin"
-    name = (file.filename or "").strip()
-    ext = os.path.splitext(name)[1].lower()
-    if ext in MEDIA_EXTS:
-        return ext
-    ctype = (file.content_type or "").lower()
-    if ctype == "image/jpeg":
-        return ".jpg"
-    if ctype == "image/png":
-        return ".png"
-    if ctype == "image/webp":
-        return ".webp"
-    return ".bin"
-
-async def _save_upload(file: Optional[UploadFile], base_path_no_ext: str) -> Optional[str]:
-    if not file:
-        return None
-    ext = _guess_ext(file)
-    full_path = f"{base_path_no_ext}{ext}"
-    _ensure_dir(os.path.dirname(full_path))
+        return False
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
+        return False
+    await _ensure_storage_bucket()
     data = await file.read()
-    with open(full_path, "wb") as f:
-        f.write(data)
-    return full_path
+    if not data:
+        return False
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+        "Content-Type": file.content_type or "application/octet-stream",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.put(
+            f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{path}",
+            headers=headers,
+            params={"upsert": "true"},
+            content=data,
+        )
+    return resp.status_code in (200, 201)
 
-def _find_media_path(base_path_no_ext: str) -> Optional[str]:
-    for ext in MEDIA_EXTS:
-        cand = f"{base_path_no_ext}{ext}"
-        if os.path.exists(cand):
-            return cand
-    return None
-
-def _load_media_bytes(base_path_no_ext: str) -> Optional[bytes]:
-    path = _find_media_path(base_path_no_ext)
-    if not path:
+async def _storage_download(path: str) -> Optional[bytes]:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
         return None
-    try:
-        with open(path, "rb") as f:
-            return f.read()
-    except Exception:
+    await _ensure_storage_bucket()
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{path}",
+            headers=headers,
+        )
+    if resp.status_code != 200:
         return None
-
-def _media_exists(base_path_no_ext: str) -> bool:
-    return _find_media_path(base_path_no_ext) is not None
+    return resp.content
 
 # -----------------------------------------------------------------------------
 # MODELOS ORM
@@ -551,23 +565,6 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         if not user: return {"error": "Usuario no encontrado"}
         if user.password_hash != datos.password: return {"error": "Contraseï¿½a incorrecta"}
 
-        if user.role == "cliente":
-            try:
-                exists_cli = (await db.execute(
-                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
-                    {"u": user.id},
-                )).scalar()
-                if not exists_cli:
-                    meta = auth_user.get("user_metadata") or {}
-                    nombre_meta = meta.get("nombre") or meta.get("name") or "Cliente"
-                    await db.execute(
-                        text("INSERT INTO clientes (usuario_id, nom_apell) VALUES (:u, :n)"),
-                        {"u": user.id, "n": nombre_meta},
-                    )
-                    await db.commit()
-            except Exception:
-                await db.rollback()
-
         nombre_real = "Usuario"
         try:
             if user.role == 'cliente':
@@ -660,6 +657,23 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         user = res.fetchone()
         if not user:
             return {"error": "Usuario no encontrado en backend"}
+
+        if user.role == "cliente":
+            try:
+                exists_cli = (await db.execute(
+                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                    {"u": user.id},
+                )).scalar()
+                if not exists_cli:
+                    meta = auth_user.get("user_metadata") or {}
+                    nombre_meta = meta.get("nombre") or meta.get("name") or "Cliente"
+                    await db.execute(
+                        text("INSERT INTO clientes (usuario_id, nom_apell) VALUES (:u, :n)"),
+                        {"u": user.id, "n": nombre_meta},
+                    )
+                    await db.commit()
+            except Exception:
+                await db.rollback()
 
         nombre_real = "Usuario"
         try:
@@ -887,38 +901,35 @@ async def registrar_usuario_fotos(
 
         await db.commit()
 
-        try:
-            await _save_upload(
-                foto_cedulafrente,
-                _media_path("clientes", str(existing_id), "foto_cedula_frente"),
-            )
-            await _save_upload(
-                foto_cedulaposterior,
-                _media_path("clientes", str(existing_id), "foto_cedula_posterior"),
-            )
-            await _save_upload(
-                foto_selfieci,
-                _media_path("clientes", str(existing_id), "foto_selfie"),
-            )
-            await _save_upload(
-                foto_pasaporte,
-                _media_path("clientes", str(existing_id), "foto_pasaporte"),
-            )
-        except Exception as e:
-            return {"error": f"No se pudieron guardar las fotos: {str(e)}"}
+        ok_frente = await _storage_upload(
+            f"clientes/{existing_id}/foto_cedula_frente",
+            foto_cedulafrente,
+        )
+        ok_posterior = await _storage_upload(
+            f"clientes/{existing_id}/foto_cedula_posterior",
+            foto_cedulaposterior,
+        )
+        ok_selfie = await _storage_upload(
+            f"clientes/{existing_id}/foto_selfie",
+            foto_selfieci,
+        )
+        ok_pasaporte = await _storage_upload(
+            f"clientes/{existing_id}/foto_pasaporte",
+            foto_pasaporte,
+        )
 
         updates = []
         params = {"uid": existing_id}
-        if foto_cedulafrente:
+        if ok_frente:
             updates.append("foto_cedulafrente = :ff")
             params["ff"] = "OK"
-        if foto_cedulaposterior:
+        if ok_posterior:
             updates.append("foto_cedulaposterior = :fa")
             params["fa"] = "OK"
-        if foto_selfieci:
+        if ok_selfie:
             updates.append("foto_selfieci = :fs")
             params["fs"] = "OK"
-        if foto_pasaporte:
+        if ok_pasaporte:
             updates.append("foto_pasaporte = :fp")
             params["fp"] = "OK"
         if updates:
@@ -1080,56 +1091,56 @@ async def obtener_vehiculo_por_placa(placa: str, db: AsyncSession = Depends(get_
 
 @app.get("/vehiculos/{vehiculo_id}/foto")
 async def ver_foto_vehiculo(vehiculo_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("vehiculos", str(vehiculo_id), "foto_vehiculo"))
+    data = await _storage_download(f"vehiculos/{vehiculo_id}/foto_vehiculo")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/conductores/{usuario_id}/foto_perfil")
 async def ver_foto_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("conductores", str(usuario_id), "foto_perfil"))
+    data = await _storage_download(f"conductores/{usuario_id}/foto_perfil")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/conductores/{usuario_id}/cedula_front")
 async def ver_cedula_front_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("conductores", str(usuario_id), "cedula_front"))
+    data = await _storage_download(f"conductores/{usuario_id}/cedula_front")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/conductores/{usuario_id}/cedula_back")
 async def ver_cedula_back_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("conductores", str(usuario_id), "cedula_back"))
+    data = await _storage_download(f"conductores/{usuario_id}/cedula_back")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/clientes/{usuario_id}/foto_cedula_frente")
 async def ver_cedula_frente_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("clientes", str(usuario_id), "foto_cedula_frente"))
+    data = await _storage_download(f"clientes/{usuario_id}/foto_cedula_frente")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/clientes/{usuario_id}/foto_cedula_posterior")
 async def ver_cedula_posterior_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("clientes", str(usuario_id), "foto_cedula_posterior"))
+    data = await _storage_download(f"clientes/{usuario_id}/foto_cedula_posterior")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/clientes/{usuario_id}/foto_selfie")
 async def ver_selfie_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("clientes", str(usuario_id), "foto_selfie"))
+    data = await _storage_download(f"clientes/{usuario_id}/foto_selfie")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
 @app.get("/clientes/{usuario_id}/foto_pasaporte")
 async def ver_pasaporte_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
-    data = _load_media_bytes(_media_path("clientes", str(usuario_id), "foto_pasaporte"))
+    data = await _storage_download(f"clientes/{usuario_id}/foto_pasaporte")
     if not data:
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
@@ -1244,28 +1255,28 @@ async def registrar_conductor_existente(
                 },
             )
 
-        await _save_upload(
+        ok_front = await _storage_upload(
+            f"conductores/{new_user_id}/cedula_front",
             cedula_front,
-            _media_path("conductores", str(new_user_id), "cedula_front"),
         )
-        await _save_upload(
+        ok_back = await _storage_upload(
+            f"conductores/{new_user_id}/cedula_back",
             cedula_back,
-            _media_path("conductores", str(new_user_id), "cedula_back"),
         )
-        await _save_upload(
+        ok_perfil = await _storage_upload(
+            f"conductores/{new_user_id}/foto_perfil",
             foto_perfil,
-            _media_path("conductores", str(new_user_id), "foto_perfil"),
         )
 
         updates = []
         params = {"uid": new_user_id}
-        if cedula_front:
+        if ok_front:
             updates.append("cedula_front = :cf")
             params["cf"] = "OK"
-        if cedula_back:
+        if ok_back:
             updates.append("cedula_back = :cb")
             params["cb"] = "OK"
-        if foto_perfil:
+        if ok_perfil:
             updates.append("foto_perfil = :fp")
             params["fp"] = "OK"
         if updates:
@@ -1343,15 +1354,16 @@ async def registrar_flota_completo(
         await db.commit()
         await db.refresh(nuevo_auto)
 
-        await _save_upload(
+        ok_auto = await _storage_upload(
+            f"vehiculos/{nuevo_auto.id}/foto_vehiculo",
             foto_vehiculo,
-            _media_path("vehiculos", str(nuevo_auto.id), "foto_vehiculo"),
         )
-        await db.execute(
-            text("UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = NULL WHERE id = :vid"),
-            {"fv": "OK", "vid": nuevo_auto.id},
-        )
-        await db.commit()
+        if ok_auto:
+            await db.execute(
+                text("UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = NULL WHERE id = :vid"),
+                {"fv": "OK", "vid": nuevo_auto.id},
+            )
+            await db.commit()
 
         # 3. Registrar al Dueño en tabla Conductores
         exists_owner_cond = (await db.execute(
@@ -1372,27 +1384,27 @@ async def registrar_flota_completo(
         db.add(nuevo_conductor)
         await db.commit()
 
-        await _save_upload(
+        ok_front = await _storage_upload(
+            f"conductores/{owner_user_id}/cedula_front",
             cedula_front,
-            _media_path("conductores", str(owner_user_id), "cedula_front"),
         )
-        await _save_upload(
+        ok_back = await _storage_upload(
+            f"conductores/{owner_user_id}/cedula_back",
             cedula_back,
-            _media_path("conductores", str(owner_user_id), "cedula_back"),
         )
-        await _save_upload(
+        ok_perfil = await _storage_upload(
+            f"conductores/{owner_user_id}/foto_perfil",
             foto_perfil,
-            _media_path("conductores", str(owner_user_id), "foto_perfil"),
         )
         updates = []
         params = {"uid": owner_user_id}
-        if cedula_front:
+        if ok_front:
             updates.append("cedula_front = :cf")
             params["cf"] = "OK"
-        if cedula_back:
+        if ok_back:
             updates.append("cedula_back = :cb")
             params["cb"] = "OK"
-        if foto_perfil:
+        if ok_perfil:
             updates.append("foto_perfil = :fp")
             params["fp"] = "OK"
         if updates:
@@ -1799,7 +1811,8 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text("""
             SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id,
-                   u.email, c.cedula, c.fecha_nacimiento
+                   u.email, c.cedula, c.fecha_nacimiento,
+                   c.foto_perfil, c.cedula_front, c.cedula_back
             FROM conductores c
             JOIN vehiculos v ON c.vehiculo_id = v.id
             JOIN usuarios u ON c.usuario_id = u.id
@@ -1816,9 +1829,9 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
             "email": r.email,
             "cedula": r.cedula,
             "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None,
-            "has_foto_perfil": _media_exists(_media_path("conductores", str(r.usuario_id), "foto_perfil")),
-            "has_cedula_front": _media_exists(_media_path("conductores", str(r.usuario_id), "cedula_front")),
-            "has_cedula_back": _media_exists(_media_path("conductores", str(r.usuario_id), "cedula_back")),
+            "has_foto_perfil": r.foto_perfil == "OK",
+            "has_cedula_front": r.cedula_front == "OK",
+            "has_cedula_back": r.cedula_back == "OK",
         } for r in res.fetchall()]
     except Exception as e: return []
 
@@ -1826,7 +1839,8 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
 async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text("""
-            SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono
+            SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                   c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte
             FROM usuarios u
             LEFT JOIN clientes c ON u.id = c.usuario_id
             WHERE u.role = 'cliente'
@@ -1837,10 +1851,10 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
             "email": r.email, 
             "nombre": r.nombre,
             "telefono": r.telefono,
-            "has_cedula_front": _media_exists(_media_path("clientes", str(r.id), "foto_cedula_frente")),
-            "has_cedula_back": _media_exists(_media_path("clientes", str(r.id), "foto_cedula_posterior")),
-            "has_selfie": _media_exists(_media_path("clientes", str(r.id), "foto_selfie")),
-            "has_pasaporte": _media_exists(_media_path("clientes", str(r.id), "foto_pasaporte")),
+            "has_cedula_front": r.foto_cedulafrente == "OK",
+            "has_cedula_back": r.foto_cedulaposterior == "OK",
+            "has_selfie": r.foto_selfieci == "OK",
+            "has_pasaporte": r.foto_pasaporte == "OK",
         } for r in res.fetchall()]
     except Exception as e:
         print(f"Error usuarios: {e}")
@@ -1986,27 +2000,27 @@ async def admin_actualizar_fotos_conductor(
         if not exists_cond:
             return JSONResponse(status_code=404, content={"error": "Conductor no encontrado"})
 
-        await _save_upload(
+        ok_perfil = await _storage_upload(
+            f"conductores/{usuario_id}/foto_perfil",
             foto_perfil,
-            _media_path("conductores", str(usuario_id), "foto_perfil"),
         )
-        await _save_upload(
+        ok_front = await _storage_upload(
+            f"conductores/{usuario_id}/cedula_front",
             cedula_front,
-            _media_path("conductores", str(usuario_id), "cedula_front"),
         )
-        await _save_upload(
+        ok_back = await _storage_upload(
+            f"conductores/{usuario_id}/cedula_back",
             cedula_back,
-            _media_path("conductores", str(usuario_id), "cedula_back"),
         )
         updates = []
         params = {"uid": usuario_id}
-        if foto_perfil:
+        if ok_perfil:
             updates.append("foto_perfil = :fp")
             params["fp"] = "OK"
-        if cedula_front:
+        if ok_front:
             updates.append("cedula_front = :cf")
             params["cf"] = "OK"
-        if cedula_back:
+        if ok_back:
             updates.append("cedula_back = :cb")
             params["cb"] = "OK"
         if updates:
@@ -2053,18 +2067,3 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
