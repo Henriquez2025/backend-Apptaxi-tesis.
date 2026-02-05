@@ -1836,7 +1836,11 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
             "id": r.id, 
             "email": r.email, 
             "nombre": r.nombre,
-            "telefono": r.telefono 
+            "telefono": r.telefono,
+            "has_cedula_front": _media_exists(_media_path("clientes", str(r.id), "foto_cedula_frente")),
+            "has_cedula_back": _media_exists(_media_path("clientes", str(r.id), "foto_cedula_posterior")),
+            "has_selfie": _media_exists(_media_path("clientes", str(r.id), "foto_selfie")),
+            "has_pasaporte": _media_exists(_media_path("clientes", str(r.id), "foto_pasaporte")),
         } for r in res.fetchall()]
     except Exception as e:
         print(f"Error usuarios: {e}")
