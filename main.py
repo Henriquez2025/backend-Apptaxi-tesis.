@@ -343,6 +343,114 @@ async def get_db():
 @app.get("/")
 def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
 
+# ---------------------------------------------------------------------------
+# REPORTES (ADMIN)
+# ---------------------------------------------------------------------------
+
+@app.get("/reportes/viajes/conductores")
+async def reportes_viajes_conductores(db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.id, v.origen, v.destino, v.estado, v.tarifa, v.fecha_creacion,
+                   c.nom_apell as conductor_nombre,
+                   cli.nom_apell as cliente_nombre
+            FROM viajes v
+            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
+            LEFT JOIN clientes cli ON v.cliente_id = cli.usuario_id
+            WHERE v.conductor_id IS NOT NULL
+            ORDER BY v.fecha_creacion DESC
+        """)
+        res = await db.execute(query)
+        return [{
+            "id": r.id,
+            "origen": r.origen,
+            "destino": r.destino,
+            "estado": r.estado,
+            "tarifa": r.tarifa,
+            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            "conductor": r.conductor_nombre or "Conductor",
+            "pasajero": r.cliente_nombre or "Cliente",
+        } for r in res.fetchall()]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/reportes/viajes/clientes")
+async def reportes_viajes_clientes(db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT v.id, v.origen, v.destino, v.estado, v.tarifa, v.fecha_creacion,
+                   c.nom_apell as conductor_nombre,
+                   cli.nom_apell as cliente_nombre
+            FROM viajes v
+            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
+            LEFT JOIN clientes cli ON v.cliente_id = cli.usuario_id
+            ORDER BY v.fecha_creacion DESC
+        """)
+        res = await db.execute(query)
+        return [{
+            "id": r.id,
+            "origen": r.origen,
+            "destino": r.destino,
+            "estado": r.estado,
+            "tarifa": r.tarifa,
+            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            "conductor": r.conductor_nombre or "Conductor",
+            "pasajero": r.cliente_nombre or "Cliente",
+        } for r in res.fetchall()]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/reportes/sos/conductores")
+async def reportes_sos_conductores(db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT a.id, a.ubicacion, a.mensaje_extra, a.fecha,
+                   c.nom_apell as nombre, u.email
+            FROM alertas a
+            JOIN usuarios u ON a.usuario_id = u.id
+            LEFT JOIN conductores c ON a.usuario_id = c.usuario_id
+            WHERE u.role = 'conductor'
+            ORDER BY a.fecha DESC
+        """)
+        res = await db.execute(query)
+        return [{
+            "id": r.id,
+            "ubicacion": r.ubicacion,
+            "mensaje": r.mensaje_extra,
+            "fecha": r.fecha.isoformat() if r.fecha else None,
+            "nombre": r.nombre or "Conductor",
+            "email": r.email,
+        } for r in res.fetchall()]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/reportes/sos/clientes")
+async def reportes_sos_clientes(db: AsyncSession = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT a.id, a.ubicacion, a.mensaje_extra, a.fecha,
+                   c.nom_apell as nombre, u.email
+            FROM alertas a
+            JOIN usuarios u ON a.usuario_id = u.id
+            LEFT JOIN clientes c ON a.usuario_id = c.usuario_id
+            WHERE u.role = 'cliente'
+            ORDER BY a.fecha DESC
+        """)
+        res = await db.execute(query)
+        return [{
+            "id": r.id,
+            "ubicacion": r.ubicacion,
+            "mensaje": r.mensaje_extra,
+            "fecha": r.fecha.isoformat() if r.fecha else None,
+            "nombre": r.nombre or "Cliente",
+            "email": r.email,
+        } for r in res.fetchall()]
+    except Exception as e:
+        return {"error": str(e)}
+
 # --- LOGIN Y REGISTROS Bï¿½SICOS ---
 
 @app.post("/login")
@@ -1564,18 +1672,5 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
