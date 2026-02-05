@@ -9,7 +9,7 @@ from typing import Optional, List
 import uvicorn
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, HTMLResponse, Response
+from fastapi.responses import JSONResponse, HTMLResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
@@ -271,6 +271,16 @@ async def _storage_download(path: str) -> Optional[bytes]:
     if resp.status_code != 200:
         return None
     return resp.content
+
+async def _get_media_url(db: AsyncSession, table: str, column: str, key_col: str, key_val: int) -> Optional[str]:
+    try:
+        q = text(f"SELECT {column} as url FROM {table} WHERE {key_col} = :id")
+        row = (await db.execute(q, {"id": key_val})).fetchone()
+        if row and row.url:
+            return row.url
+    except Exception:
+        return None
+    return None
 
 # -----------------------------------------------------------------------------
 # MODELOS ORM
@@ -1185,6 +1195,9 @@ async def obtener_vehiculo_por_placa(placa: str, db: AsyncSession = Depends(get_
 async def ver_foto_vehiculo(vehiculo_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"vehiculos/{vehiculo_id}/foto_vehiculo")
     if not data:
+        url = await _get_media_url(db, "vehiculos", "foto_vehiculo_url", "id", vehiculo_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1192,6 +1205,9 @@ async def ver_foto_vehiculo(vehiculo_id: int, db: AsyncSession = Depends(get_db)
 async def ver_foto_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"conductores/{usuario_id}/foto_perfil")
     if not data:
+        url = await _get_media_url(db, "conductores", "foto_perfil_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1199,6 +1215,9 @@ async def ver_foto_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)
 async def ver_cedula_front_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"conductores/{usuario_id}/cedula_front")
     if not data:
+        url = await _get_media_url(db, "conductores", "cedula_front_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1206,6 +1225,9 @@ async def ver_cedula_front_conductor(usuario_id: int, db: AsyncSession = Depends
 async def ver_cedula_back_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"conductores/{usuario_id}/cedula_back")
     if not data:
+        url = await _get_media_url(db, "conductores", "cedula_back_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1213,6 +1235,9 @@ async def ver_cedula_back_conductor(usuario_id: int, db: AsyncSession = Depends(
 async def ver_cedula_frente_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"clientes/{usuario_id}/foto_cedula_frente")
     if not data:
+        url = await _get_media_url(db, "clientes", "foto_cedulafrente_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1220,6 +1245,9 @@ async def ver_cedula_frente_cliente(usuario_id: int, db: AsyncSession = Depends(
 async def ver_cedula_posterior_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"clientes/{usuario_id}/foto_cedula_posterior")
     if not data:
+        url = await _get_media_url(db, "clientes", "foto_cedulaposterior_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1227,6 +1255,9 @@ async def ver_cedula_posterior_cliente(usuario_id: int, db: AsyncSession = Depen
 async def ver_selfie_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"clientes/{usuario_id}/foto_selfie")
     if not data:
+        url = await _get_media_url(db, "clientes", "foto_selfieci_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
@@ -1234,6 +1265,9 @@ async def ver_selfie_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)
 async def ver_pasaporte_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"clientes/{usuario_id}/foto_pasaporte")
     if not data:
+        url = await _get_media_url(db, "clientes", "foto_pasaporte_url", "usuario_id", usuario_id)
+        if url:
+            return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 @app.post("/registrar_conductor_existente")
@@ -1920,7 +1954,8 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
         query = text("""
             SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id,
                    u.email, c.cedula, c.fecha_nacimiento,
-                   c.foto_perfil, c.cedula_front, c.cedula_back
+                   c.foto_perfil, c.cedula_front, c.cedula_back,
+                   c.foto_perfil_url, c.cedula_front_url, c.cedula_back_url
             FROM conductores c
             JOIN vehiculos v ON c.vehiculo_id = v.id
             JOIN usuarios u ON c.usuario_id = u.id
@@ -1937,9 +1972,9 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
             "email": r.email,
             "cedula": r.cedula,
             "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None,
-            "has_foto_perfil": r.foto_perfil == "OK",
-            "has_cedula_front": r.cedula_front == "OK",
-            "has_cedula_back": r.cedula_back == "OK",
+            "has_foto_perfil": (r.foto_perfil == "OK") or (r.foto_perfil_url is not None),
+            "has_cedula_front": (r.cedula_front == "OK") or (r.cedula_front_url is not None),
+            "has_cedula_back": (r.cedula_back == "OK") or (r.cedula_back_url is not None),
         } for r in res.fetchall()]
     except Exception as e: return []
 
@@ -1948,7 +1983,8 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text("""
             SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
-                   c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte
+                   c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                   c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
             FROM usuarios u
             LEFT JOIN clientes c ON u.id = c.usuario_id
             WHERE u.role = 'cliente'
@@ -1959,10 +1995,10 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
             "email": r.email, 
             "nombre": r.nombre,
             "telefono": r.telefono,
-            "has_cedula_front": r.foto_cedulafrente == "OK",
-            "has_cedula_back": r.foto_cedulaposterior == "OK",
-            "has_selfie": r.foto_selfieci == "OK",
-            "has_pasaporte": r.foto_pasaporte == "OK",
+            "has_cedula_front": (r.foto_cedulafrente == "OK") or (r.foto_cedulafrente_url is not None),
+            "has_cedula_back": (r.foto_cedulaposterior == "OK") or (r.foto_cedulaposterior_url is not None),
+            "has_selfie": (r.foto_selfieci == "OK") or (r.foto_selfieci_url is not None),
+            "has_pasaporte": (r.foto_pasaporte == "OK") or (r.foto_pasaporte_url is not None),
         } for r in res.fetchall()]
     except Exception as e:
         print(f"Error usuarios: {e}")
@@ -2176,17 +2212,53 @@ async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
         await db.rollback()
         return dict(error=str(e))
 
+@app.get("/usuarios/perfil/{usuario_id}")
+async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        user = (await db.execute(
+            text("SELECT id, email, role FROM usuarios WHERE id = :uid"),
+            {"uid": usuario_id},
+        )).fetchone()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "Usuario no encontrado"})
 
+        nombre = None
+        foto_url = None
 
+        if user.role == "cliente":
+            row = (await db.execute(
+                text("SELECT nom_apell, foto_selfieci, foto_selfieci_url FROM clientes WHERE usuario_id = :uid"),
+                {"uid": usuario_id},
+            )).fetchone()
+            if row:
+                nombre = row.nom_apell
+                if row.foto_selfieci == "OK":
+                    foto_url = _build_public_url(f"/clientes/{usuario_id}/foto_selfie")
+                elif row.foto_selfieci_url:
+                    foto_url = row.foto_selfieci_url
+        elif user.role == "conductor":
+            row = (await db.execute(
+                text("SELECT nom_apell, foto_perfil, foto_perfil_url FROM conductores WHERE usuario_id = :uid"),
+                {"uid": usuario_id},
+            )).fetchone()
+            if row:
+                nombre = row.nom_apell
+                if row.foto_perfil == "OK":
+                    foto_url = _build_public_url(f"/conductores/{usuario_id}/foto_perfil")
+                elif row.foto_perfil_url:
+                    foto_url = row.foto_perfil_url
 
-
-
-
-
-
-
-
-
+        return {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "nombre": nombre or "Usuario",
+            "foto_url": foto_url,
+            "calificacion": 5.0,
+            "conteo": 0,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 
