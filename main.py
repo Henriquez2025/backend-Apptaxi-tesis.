@@ -1450,6 +1450,7 @@ async def registrar_flota_completo(
     owner_nombre: str = Form(...),
     owner_apellido: str = Form(...),
     owner_cedula: str = Form(...),
+    owner_email: str = Form(...),
     owner_fecha_nac: str = Form(...),
     owner_telefono: str = Form(...),
     
@@ -1466,25 +1467,44 @@ async def registrar_flota_completo(
 ):
     try:
         # 1. Crear el Usuario (Dueño)
-        owner_email = f"{owner_cedula}@taxis.com"
+        email_final = owner_email.strip().lower()
         owner_row = (await db.execute(
             text("SELECT id, role FROM usuarios WHERE email = :e"),
             {"e": owner_email},
         )).fetchone()
-        if owner_row:
+if owner_row:
+            # Si el usuario ya existe, verificamos que sea conductor
             if owner_row.role != "conductor":
-                return JSONResponse(status_code=400, content={"error": "Email ya existe con otro rol"})
+                return JSONResponse(status_code=400, content={"error": "El correo ya existe con otro rol"})
             owner_user_id = owner_row.id
         else:
-            supa_res = await _supabase_admin_create_user(owner_email, owner_cedula, "conductor")
+            # Si no existe, lo creamos en Supabase y DB local
+            supa_res = await _supabase_admin_create_user(email_final, owner_cedula, "conductor")
             if isinstance(supa_res, dict) and supa_res.get("error"):
-                return JSONResponse(status_code=400, content={"error": supa_res["error"]})
+                # Manejo de error si ya existe en Supabase pero no en local
+                err_msg = str(supa_res.get("error"))
+                if _is_supabase_user_exists_error(err_msg):
+                     # Intentamos recuperar el usuario de Supabase si ya existía
+                     supa_user = await _supabase_admin_get_user_by_email(email_final)
+                else:
+                    return JSONResponse(status_code=400, content={"error": supa_res["error"]})
+
             owner_user_id = (await db.execute(
                 text("INSERT INTO usuarios (email, password_hash, role, must_change_password) VALUES (:e, :p, :r, true) RETURNING id"),
-                {"e": owner_email, "p": owner_cedula, "r": "conductor"},
+                {"e": email_final, "p": owner_cedula, "r": "conductor"},
             )).scalar()
+            
+            # Intentamos vincular el ID de Supabase si se creó/recuperó
+            try:
+                 if 'supa_user' in locals() and supa_user and isinstance(supa_user, dict) and supa_user.get("id"):
+                    await db.execute(
+                        text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
+                        {"suid": supa_user.get("id"), "uid": owner_user_id},
+                    )
+            except Exception:
+                pass
 
-        # 2. Registrar Vehï¿½culo
+        # 2. Registrar Vehiculo
         nuevo_auto = Vehiculo(
             placa=vehiculo_placa,
             marca=vehiculo_marca,
@@ -1566,8 +1586,10 @@ async def registrar_flota_completo(
         
         for extra in lista_conductores:
             # Crear usuario para el chofer extra
-            # Generar email único si no viene
-            email_extra = f"{extra['cedula']}@chofer.com"
+            email_extra = extra.get('email')
+            if not email_extra:
+                email_extra = f"{extra['cedula']}@chofer.com"
+                email_extra = email_extra.strip().lower()
             
             chofer_row = (await db.execute(
                 text("SELECT id, role FROM usuarios WHERE email = :e"),
@@ -2259,6 +2281,7 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 
