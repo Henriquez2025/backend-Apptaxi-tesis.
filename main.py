@@ -26,6 +26,17 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, HTMLResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 from pydantic import BaseModel
 from sqlalchemy import (
     Column,
@@ -2878,6 +2889,14 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 
 
+# visualizar errores
+@app.on_event("startup")
+async def debug_rutas():
+    print("🚀 RUTAS REGISTRADAS EN EL SERVIDOR:")
+    for route in app.routes:
+        print(f"URL: {route.path} | Métodos: {route.methods}")
+
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
@@ -2973,4 +2992,3 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
                         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
