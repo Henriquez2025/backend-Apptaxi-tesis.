@@ -134,6 +134,41 @@ def verificar_password(plain_password: str, hashed_password: str) -> bool:
     )  # Compara una contraseña escrita con la cifrada en la base de datos
 
 
+async def _backfill_password_hashes():
+    """
+    Reemplaza valores tipo 'managed_by_supabase'/vacíos por un hash bcrypt
+    (solo estético) para que no rompa verificación ni vista en la tabla.
+    """
+    if not engine:
+        return
+    try:
+        async with async_session() as db:
+            res = await db.execute(
+                text(
+                    """
+                    SELECT id, email
+                    FROM usuarios
+                    WHERE password_hash IS NULL
+                       OR password_hash = ''
+                       OR password_hash = 'managed_by_supabase'
+                    """
+                )
+            )
+            rows = res.fetchall()
+            if not rows:
+                return
+            for r in rows:
+                seed = f"supabase:{r.id}:{(r.email or '').lower()}"
+                await db.execute(
+                    text("UPDATE usuarios SET password_hash = :p WHERE id = :uid"),
+                    {"p": obtener_hash_password(seed), "uid": r.id},
+                )
+            await db.commit()
+    except Exception:
+        # No interrumpir el arranque si falla
+        return
+
+
 # FUNCIONES ADMINISTRATIVAS DE SUPABASE AUTH
 # Estas funciones permiten gestionar usuarios (Crear, Actualizar, Eliminar)
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
@@ -3222,6 +3257,11 @@ async def debug_rutas():
     for route in app.routes:
         if hasattr(route, "methods"):
             print(f"URL: {route.path} | Métodos: {route.methods}")
+
+
+@app.on_event("startup")
+async def backfill_password_hashes_on_startup():
+    await _backfill_password_hashes()
 
 
 if __name__ == "__main__":
