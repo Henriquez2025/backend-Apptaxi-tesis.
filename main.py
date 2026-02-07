@@ -1784,7 +1784,7 @@ async def registrar_vehiculo_completo(
         # Verifica/Crea Usuario para el Dueño
         user_row = (
             await db.execute(
-                text("SELECT id, role FROM usuarios WHERE email = :e"),
+                text("SELECT id, role, supabase_uid FROM usuarios WHERE email = :e"),
                 {"e": owner_email},
             )
         ).fetchone()
@@ -1812,18 +1812,55 @@ async def registrar_vehiculo_completo(
             else:
                 supa_user = supa_res
 
-            user_id = (
-                await db.execute(
-                    text(
-                        """INSERT INTO usuarios (email, password_hash, role, must_change_password) 
-                        VALUES (:e, :p, 'propietario', true) RETURNING id"""
-                    ),
-                    {
-                        "e": owner_email,
-                        "p": obtener_hash_password(datos.owner_cedula),
-                    },
-                )
-            ).scalar()
+            try:
+                user_id = (
+                    await db.execute(
+                        text(
+                            """INSERT INTO usuarios (email, password_hash, role, must_change_password) 
+                            VALUES (:e, :p, 'propietario', true) RETURNING id"""
+                        ),
+                        {
+                            "e": owner_email,
+                            "p": obtener_hash_password(datos.owner_cedula),
+                        },
+                    )
+                ).scalar()
+            except IntegrityError:
+                await db.rollback()
+                existing_owner = (
+                    await db.execute(
+                        text(
+                            "SELECT id, role, supabase_uid FROM usuarios WHERE email = :e"
+                        ),
+                        {"e": owner_email},
+                    )
+                ).fetchone()
+                if not existing_owner:
+                    return JSONResponse(
+                        status_code=400, content={"error": "El correo ya existe"}
+                    )
+                if (existing_owner.role or "").lower() != "propietario":
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "Email ya existe con otro rol"},
+                    )
+                user_id = existing_owner.id
+                # Vincula supabase_uid si se acaba de crear en Supabase
+                if (
+                    isinstance(supa_user, dict)
+                    and supa_user.get("id")
+                    and not existing_owner.supabase_uid
+                ):
+                    try:
+                        await db.execute(
+                            text(
+                                "UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"
+                            ),
+                            {"suid": supa_user.get("id"), "uid": user_id},
+                        )
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
 
             try:
                 if isinstance(supa_user, dict) and supa_user.get("id"):
