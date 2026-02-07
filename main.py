@@ -28,7 +28,6 @@ from fastapi.responses import JSONResponse, HTMLResponse, Response, RedirectResp
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1594,9 +1593,16 @@ async def registrar_usuario_fotos(
 # ENDPOINT: REGISTRO ADMINISTRATIVO (CONDUCTORES Y PROPIETARIOS)
 @app.post("/registrar_flota_completo")
 async def registrar_vehiculo_completo(
-    datos: RegistroFlotaCompletoRequest, db: AsyncSession = Depends(get_db)
+    datos: RegistroFlotaCompletoRequest = Depends(),
+    cedula_front: UploadFile = File(None),
+    cedula_back: UploadFile = File(None),
+    foto_perfil: UploadFile = File(None),
+    foto_vehiculo: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
 ):
     try:
+        if cedula_front:
+            print(f"Archivo recibido: {cedula_front.filename}")
         # Crea o actualiza el Vehículo
         vehiculo_id = (
             await db.execute(
