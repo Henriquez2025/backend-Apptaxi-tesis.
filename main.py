@@ -5,14 +5,34 @@ import json
 import base64
 from datetime import date, datetime, timedelta
 from typing import Optional, List
+from passlib.context import CryptContext
 
 import uvicorn
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    Form,
+    File,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse, HTMLResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, text, Date, DateTime, Boolean
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Float,
+    ForeignKey,
+    text,
+    Date,
+    DateTime,
+    Boolean,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -20,10 +40,14 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# --- CONFIGURACIï¿½N DE BASE DE DATOS ---
+# CONFIGURACION DE BASE DE DATOS
 PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID") or os.getenv("PROJECT_ID")
 SUPABASE_USER = os.getenv("SUPABASE_DB_USER") or os.getenv("DB_USER")
-SUPABASE_HOST = os.getenv("SUPABASE_DB_HOST") or os.getenv("DB_HOST") or "aws-1-sa-east-1.pooler.supabase.com"
+SUPABASE_HOST = (
+    os.getenv("SUPABASE_DB_HOST")
+    or os.getenv("DB_HOST")
+    or "aws-1-sa-east-1.pooler.supabase.com"
+)
 SUPABASE_PORT = os.getenv("SUPABASE_DB_PORT") or os.getenv("DB_PORT") or "6543"
 SUPABASE_DB = os.getenv("SUPABASE_DB_NAME") or os.getenv("DB_NAME") or "postgres"
 DB_PASSWORD = os.getenv("SUPABASE_DB_PASSWORD") or os.getenv("DB_PASSWORD")
@@ -39,14 +63,17 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 else:
     if not SUPABASE_USER or not DB_PASSWORD:
-        raise RuntimeError("Falta configuraciï¿½n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD).")
+        raise RuntimeError(
+            "Falta configuraciï¿½n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD)."
+        )
     encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
     DATABASE_URL = (
         f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}"
         f"@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
         "?ssl=require&prepared_statement_cache_size=0"
     )
-# Inicializaciï¿½n del Motor
+
+# CONEXIÓN ASÍNCRONA CON LA BASE DE DATOS
 engine = None
 try:
     engine = create_async_engine(
@@ -57,33 +84,84 @@ try:
             "server_settings": {"jit": "off"},
             "command_timeout": 60,
             "statement_cache_size": 0,
-        }
+        },
     )
 except Exception as e:
-    print(f"FATAL: Error inicializando engine DB: {e}")
+    print(f"ERROR CRÍTICO: No se pudo conectar con la base de datos: {e}")
 
+# crea las sesiones de trabajo para cada petición de las Apps
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
 Base = declarative_base()
 
-PALABRAS_CLAVE = ["SOL", "LUNA", "MAR", "RIO", "LUZ", "PAZ", "ORO", "AZUL", "ROJO", "TIGRE", "LEON", "AGUA", "FUEGO", "AIRE", "JAZZ", "ROCK", "MENTA", "COCO", "LIMA"]
+# SEGURIDAD
+PALABRAS_CLAVE = [
+    "SOL",
+    "LUNA",
+    "MAR",
+    "RIO",
+    "LUZ",
+    "PAZ",
+    "ORO",
+    "AZUL",
+    "ROJO",
+    "TIGRE",
+    "LEON",
+    "AGUA",
+    "FUEGO",
+    "AIRE",
+    "JAZZ",
+    "ROCK",
+    "MENTA",
+    "COCO",
+    "LIMA",
+]
 
-# --- CONFIGURACIï¿½N SUPABASE AUTH ---
+# SEGURIDAD
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def obtener_hash_password(password: str) -> str:
+    return pwd_context.hash(
+        password
+    )  # Cifra la contraseña antes de guardarla en Render
+
+
+def verificar_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(
+        plain_password, hashed_password
+    )  # Compara una contraseña escrita con la cifrada en la base de datos
+
+
+# FUNCIONES ADMINISTRATIVAS DE SUPABASE AUTH
+# Estas funciones permiten gestionar usuarios (Crear, Actualizar, Eliminar)
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv(
+    "SUPABASE_SERVICE_KEY"
+)
 DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
-BASE_PUBLIC_URL = (os.getenv("PUBLIC_BASE_URL") or "https://backend-apptaxi-tesis.onrender.com").rstrip("/")
+BASE_PUBLIC_URL = (
+    os.getenv("PUBLIC_BASE_URL") or "https://backend-apptaxi-tesis.onrender.com"
+).rstrip("/")
+
 
 def _build_public_url(path: str):
     return f"{BASE_PUBLIC_URL}{path}"
 
+
 def _require_default_password() -> str:
     if not DEFAULT_USER_PASSWORD:
-        raise HTTPException(status_code=500, detail="DEFAULT_USER_PASSWORD no configurado")
+        raise HTTPException(
+            status_code=500, detail="DEFAULT_USER_PASSWORD no configurado"
+        )
     return DEFAULT_USER_PASSWORD
+
 
 async def _supabase_admin_create_user(email: str, password: str, role: str):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
-        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
+        return {
+            "error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"
+        }
     url = f"{SUPABASE_URL}/auth/v1/admin/users"
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE,
@@ -101,11 +179,14 @@ async def _supabase_admin_create_user(email: str, password: str, role: str):
     if resp.status_code not in (200, 201):
         try:
             body = resp.json()
-            msg = body.get("msg") or body.get("message") or body.get("error") or str(body)
+            msg = (
+                body.get("msg") or body.get("message") or body.get("error") or str(body)
+            )
         except Exception:
             msg = resp.text or f"HTTP {resp.status_code}"
         return {"error": msg}
     return resp.json()
+
 
 async def _supabase_admin_delete_user(user_id: str):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
@@ -118,9 +199,12 @@ async def _supabase_admin_delete_user(user_id: str):
     async with httpx.AsyncClient(timeout=15) as client:
         await client.delete(url, headers=headers)
 
+
 async def _supabase_admin_update_user(user_id: str, payload: dict):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
-        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
+        return {
+            "error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"
+        }
     url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE,
@@ -132,17 +216,22 @@ async def _supabase_admin_update_user(user_id: str, payload: dict):
     if resp.status_code not in (200, 201):
         try:
             body = resp.json()
-            msg = body.get("msg") or body.get("message") or body.get("error") or str(body)
+            msg = (
+                body.get("msg") or body.get("message") or body.get("error") or str(body)
+            )
         except Exception:
             msg = resp.text or f"HTTP {resp.status_code}"
         return {"error": msg}
     return resp.json()
 
+
 def _is_supabase_user_exists_error(msg: str) -> bool:
+    """Detecta si un error de Supabase es porque el usuario ya está registrado."""
     if not msg:
         return False
     m = msg.lower()
-    return ("already" in m) or ("exists" in m) or ("registered" in m) or ("duplicate" in m)
+    return any(x in m for x in ["already", "exists", "registered", "duplicate"])
+
 
 async def _supabase_admin_get_user_by_email(email: str) -> Optional[dict]:
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
@@ -168,7 +257,9 @@ async def _supabase_admin_get_user_by_email(email: str) -> Optional[dict]:
     return None
 
 
+# GESTIÓN DE EMERGENCIAS (SOS) EN TIEMPO REAL
 _sos_connections = set()
+
 
 async def _broadcast_sos(payload: dict):
     if not _sos_connections:
@@ -178,6 +269,10 @@ async def _broadcast_sos(payload: dict):
             await ws.send_json(payload)
         except Exception:
             _sos_connections.discard(ws)
+
+
+# UTILIDADES PARA PROCESAMIENTO DE IMÁGENES
+# Convierte un archivo subido a formato Base64 (Texto)
 async def _file_to_b64(file: Optional[UploadFile]) -> Optional[str]:
     if not file:
         return None
@@ -185,6 +280,7 @@ async def _file_to_b64(file: Optional[UploadFile]) -> Optional[str]:
     return base64.b64encode(data).decode("ascii")
 
 
+# Convierte un texto Base64 de vuelta a bytes para guardarlo
 def _b64_to_bytes(value: Optional[str]) -> Optional[bytes]:
     if not value:
         return None
@@ -195,6 +291,8 @@ def _b64_to_bytes(value: Optional[str]) -> Optional[bytes]:
     except Exception:
         return None
 
+
+# Detecta automáticamente si la imagen es JPEG o PNG
 def _guess_mime(data: bytes) -> str:
     if data.startswith(b"\xff\xd8"):
         return "image/jpeg"
@@ -202,11 +300,17 @@ def _guess_mime(data: bytes) -> str:
         return "image/png"
     return "application/octet-stream"
 
-# --- SUPABASE STORAGE (PUBLIC BUCKET) ---
+
+# CONFIGURACIÓN DE ALMACENAMIENTO (SUPABASE STORAGE)
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET") or "taxi-media"
 _STORAGE_READY = False
 
+
 async def _ensure_storage_bucket():
+    """
+    Asegura que el bucket 'taxi-media' exista en Supabase.
+    Si no existe (Error 404), lo crea automáticamente como un bucket público.
+    """
     global _STORAGE_READY
     if _STORAGE_READY:
         return
@@ -217,12 +321,18 @@ async def _ensure_storage_bucket():
         "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}",
     }
     async with httpx.AsyncClient(timeout=15) as client:
+        # Verificamos si el bucket ya existe
         resp = await client.get(
             f"{SUPABASE_URL}/storage/v1/bucket/{SUPABASE_STORAGE_BUCKET}",
             headers=headers,
         )
+        # Si no existe, procedemos a crearlo
         if resp.status_code == 404:
-            payload = {"id": SUPABASE_STORAGE_BUCKET, "name": SUPABASE_STORAGE_BUCKET, "public": True}
+            payload = {
+                "id": SUPABASE_STORAGE_BUCKET,
+                "name": SUPABASE_STORAGE_BUCKET,
+                "public": True,  # Las imágenes podrán ser vistas mediante URL pública
+            }
             await client.post(
                 f"{SUPABASE_URL}/storage/v1/bucket",
                 headers=headers,
@@ -232,7 +342,13 @@ async def _ensure_storage_bucket():
             return
     _STORAGE_READY = True
 
+
 async def _storage_upload(path: str, file: Optional[UploadFile]) -> bool:
+    """
+    Sube un archivo físico al Storage de Supabase.
+    path: La ruta interna (ej. 'vehiculos/1/foto_auto')
+    file: El archivo binario proveniente del formulario.
+    """
     if not file:
         return False
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
@@ -247,6 +363,7 @@ async def _storage_upload(path: str, file: Optional[UploadFile]) -> bool:
         "Content-Type": file.content_type or "application/octet-stream",
     }
     async with httpx.AsyncClient(timeout=30) as client:
+        # PUT con upsert=true es para sobrescribir el archivo si ya existe
         resp = await client.put(
             f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{path}",
             headers=headers,
@@ -255,7 +372,11 @@ async def _storage_upload(path: str, file: Optional[UploadFile]) -> bool:
         )
     return resp.status_code in (200, 201)
 
+
 async def _storage_download(path: str) -> Optional[bytes]:
+    """
+    Descarga los bytes de una imagen desde el Storage para mostrarla en la App.
+    """
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
         return None
     await _ensure_storage_bucket()
@@ -272,7 +393,14 @@ async def _storage_download(path: str) -> Optional[bytes]:
         return None
     return resp.content
 
-async def _get_media_url(db: AsyncSession, table: str, column: str, key_col: str, key_val: int) -> Optional[str]:
+
+async def _get_media_url(
+    db: AsyncSession, table: str, column: str, key_col: str, key_val: int
+) -> Optional[str]:
+    """
+    Busca en la base de datos si existe una URL externa directa para el archivo,
+    en caso de que no se use el almacenamiento local de Supabase.
+    """
     try:
         q = text(f"SELECT {column} as url FROM {table} WHERE {key_col} = :id")
         row = (await db.execute(q, {"id": key_val})).fetchone()
@@ -282,19 +410,38 @@ async def _get_media_url(db: AsyncSession, table: str, column: str, key_col: str
         return None
     return None
 
-# -----------------------------------------------------------------------------
-# MODELOS ORM
-# -----------------------------------------------------------------------------
+
+# MODELOS ORM (TABLAS DE BASE DE DATOS)
 class Usuario(Base):
+    """
+    Tabla maestra de credenciales. Almacena el acceso principal
+    y vincula con los perfiles específicos mediante relaciones uno-a-uno.
+    """
+
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True)
-    password_hash = Column(String) 
+    password_hash = Column(String)
     role = Column(String)
-    perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
-    perfil_conductor = relationship("Conductor", back_populates="usuario", uselist=False)
-    perfil_admin = relationship("Administrador", back_populates="usuario", uselist=False)
+    must_change_password = Column(
+        Boolean, default=False
+    )  # Para usuarios creados por Admin
+    supabase_uid = Column(String, nullable=True)  # ID único de la nube de Supabase
 
+    # Relaciones con las demás tablas de perfiles
+    perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
+    perfil_conductor = relationship(
+        "Conductor", back_populates="usuario", uselist=False
+    )
+    perfil_admin = relationship(
+        "Administrador", back_populates="usuario", uselist=False
+    )
+    perfil_propietario = relationship(
+        "Propietario", back_populates="usuario", uselist=False
+    )
+
+
+# Información personal de los usuarios que solicitan taxis
 class Cliente(Base):
     __tablename__ = "clientes"
     id_cliente = Column(Integer, primary_key=True)
@@ -306,6 +453,8 @@ class Cliente(Base):
     fecha_nacimiento = Column(Date)
     usuario = relationship("Usuario", back_populates="perfil_cliente")
 
+
+# Datos técnicos de los vehículos registrados en la flota
 class Vehiculo(Base):
     __tablename__ = "vehiculos"
     id = Column(Integer, primary_key=True)
@@ -314,7 +463,22 @@ class Vehiculo(Base):
     placa = Column(String, unique=True)
     color = Column(String, nullable=True)
     anio = Column(String, nullable=True)
+    foto_vehiculo = Column(String, nullable=True)
 
+
+# Perfil para dueños de vehículos
+class Propietario(Base):
+    __tablename__ = "propietarios"
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    nom_apell = Column(String)
+    telefono = Column(String)
+    cedula = Column(String)
+    fecha_nacimiento = Column(Date, nullable=True)
+    usuario = relationship("Usuario", back_populates="perfil_propietario")
+
+
+# Perfil operativo para los choferes
 class Conductor(Base):
     __tablename__ = "conductores"
     id_conductor = Column(Integer, primary_key=True)
@@ -323,11 +487,14 @@ class Conductor(Base):
     nom_apell = Column(String)
     telefono = Column(String)
     fecha_nacimiento = Column(Date)
-    ubicacion = Column(Geometry('POINT', srid=4326), nullable=True)
+    # Punto geográfico para el mapa de Flutter
+    ubicacion = Column(Geometry("POINT", srid=4326), nullable=True)
     activo = Column(Boolean, default=False)
-    cedula = Column(String, nullable=True) 
+    cedula = Column(String, nullable=True)
+
     usuario = relationship("Usuario", back_populates="perfil_conductor")
     vehiculo = relationship("Vehiculo")
+
 
 class Administrador(Base):
     __tablename__ = "administradores"
@@ -338,6 +505,7 @@ class Administrador(Base):
     telefono = Column(String)
     usuario = relationship("Usuario", back_populates="perfil_admin")
 
+
 class Emergencia(Base):
     __tablename__ = "emergencia"
     id = Column(Integer, primary_key=True)
@@ -346,6 +514,7 @@ class Emergencia(Base):
     numero_whatsapp = Column(String)
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
     usuario = relationship("Usuario")
+
 
 class Alerta(Base):
     __tablename__ = "alertas"
@@ -356,6 +525,8 @@ class Alerta(Base):
     fecha = Column(DateTime(timezone=True), server_default=func.now())
     usuario = relationship("Usuario")
 
+
+# Registro de transacciones de servicio entre Clientes y Conductores
 class Viaje(Base):
     __tablename__ = "viajes"
     id = Column(Integer, primary_key=True)
@@ -363,26 +534,39 @@ class Viaje(Base):
     conductor_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
     origen = Column(String)
     destino = Column(String)
-    estado = Column(String, default='pendiente')
+    estado = Column(String, default="pendiente")
     tarifa = Column(Float)
     origen_lat = Column(Float, nullable=True)
     origen_lng = Column(Float, nullable=True)
     destino_lat = Column(Float, nullable=True)
     destino_lng = Column(Float, nullable=True)
-    origen_geom = Column(Geometry('POINT', srid=4326), nullable=True)
-    destino_geom = Column(Geometry('POINT', srid=4326), nullable=True)
+    origen_geom = Column(Geometry("POINT", srid=4326), nullable=True)
+    destino_geom = Column(Geometry("POINT", srid=4326), nullable=True)
     clave_seguridad = Column(String, nullable=True)
     fecha_creacion = Column(DateTime(timezone=True), server_default=func.now())
     cliente_usuario = relationship("Usuario", foreign_keys=[cliente_id])
     conductor_usuario = relationship("Usuario", foreign_keys=[conductor_id])
 
-# -----------------------------------------------------------------------------
-# DTOs
-# -----------------------------------------------------------------------------
+
+# DTOs (DATA TRANSFER OBJECTS) - ESQUEMAS DE VALIDACIÓN PYDANTIC
+# Estos modelos definen la estructura exacta de los datos que el Backend espera recibir.
+# Pydantic se encarga de validar que los tipos de datos (str, int, float) sean correctos
+# antes de procesarlos en la lógica de negocio.
+
+
 class LoginRequest(BaseModel):
-    email: str; password: str
-    
+    """Esquema para la autenticación de usuarios."""
+
+    email: str
+    password: str
+
+
 class AuthSyncRequest(BaseModel):
+    """
+    Sincronización entre Supabase Auth y la Base de Datos local.
+    Se usa cuando un usuario se registra o loguea por primera vez.
+    """
+
     email: str
     supabase_uid: str
     access_token: Optional[str] = None
@@ -394,62 +578,151 @@ class AuthSyncRequest(BaseModel):
     tipo_documento: Optional[str] = None
     numero_documento: Optional[str] = None
 
+
 class ViajeRequest(BaseModel):
-    usuario_id: int; origen: str; destino: str; tarifa: float
-    origen_lat: Optional[float] = None; origen_lng: Optional[float] = None
-    destino_lat: Optional[float] = None; destino_lng: Optional[float] = None
+    """
+    Datos necesarios para solicitar un nuevo viaje.
+    """
+
+    usuario_id: int
+    origen: str
+    destino: str
+    tarifa: float
+    origen_lat: Optional[float] = None
+    origen_lng: Optional[float] = None
+    destino_lat: Optional[float] = None
+    destino_lng: Optional[float] = None
+
 
 class AceptarViajeRequest(BaseModel):
-    viaje_id: int; conductor_id: int
+    """Datos enviados por el conductor al aceptar una carrera."""
+
+    viaje_id: int
+    conductor_id: int
+
 
 class UsuarioRegistroRequest(BaseModel):
-    nombre: str; email: str; password: str; role: str = "cliente"
-    telefono: Optional[str] = None; fecha_nacimiento: Optional[str] = None
-    pais: Optional[str] = None; ciudad: Optional[str] = None
-    tipo_documento: str | None = None
-    numero_documento: str | None = None
+    """Registro estándar de nuevos clientes."""
+
+    nombre: str
+    email: str
+    password: str
+    role: str = "cliente"
+    telefono: Optional[str] = None
+    fecha_nacimiento: Optional[str] = None
+    pais: Optional[str] = None
+    ciudad: Optional[str] = None
+    tipo_documento: Optional[str] = None
+    numero_documento: Optional[str] = None
+
 
 class RegistroConductorRequest(BaseModel):
-    nombre: str; email: str; password: str; telefono: str; fecha_nacimiento: str
-    role: str = "conductor"; vehiculo_marca: str; vehiculo_modelo: str; vehiculo_placa: str
-    vehiculo_color: Optional[str] = None; vehiculo_anio: Optional[str] = None; cedula: Optional[str] = None; horario_trabajo: Optional[str] = None
+    """
+    Registro administrativo de conductores.
+    """
+
+    nombre: str
+    email: str
+    password: str
+    telefono: str
+    fecha_nacimiento: str
+    role: str = "conductor"
+    vehiculo_marca: str
+    vehiculo_modelo: str
+    vehiculo_placa: str
+    vehiculo_color: Optional[str] = None
+    vehiculo_anio: Optional[str] = None
+    cedula: Optional[str] = None
+    horario_trabajo: Optional[str] = None
+
 
 class ContactoRequest(BaseModel):
-    usuario_id: int; nombre_contacto: str; numero_whatsapp: str
+    """Agregar un contacto de emergencia."""
+
+    usuario_id: int
+    nombre_contacto: str
+    numero_whatsapp: str
+
 
 class ContactoEditRequest(BaseModel):
-    nombre_contacto: str; numero_whatsapp: str
+    """Edición de contacto de emergencia."""
+
+    nombre_contacto: str
+    numero_whatsapp: str
+
 
 class AlertaRequest(BaseModel):
-    usuario_id: int; ubicacion: str; mensaje: str
+    """Alerta de pánico genérica - SOS"""
+
+    usuario_id: int
+    ubicacion: str
+    mensaje: str
+
 
 class SosConductorRequest(BaseModel):
+    """
+    Alerta de pánico específica para conductores.
+    """
+
     usuario_id: int
     lat: float
     lng: float
     mensaje: Optional[str] = None
 
+
 class SosConductorCloseRequest(BaseModel):
+    """Para marcar una alerta SOS como atendida/cerrada."""
+
     usuario_id: int
+
+
 class UbicacionConductorRequest(BaseModel):
-    usuario_id: int; latitud: float; longitud: float
+    """Actualización periódica del GPS del conductor."""
+
+    usuario_id: int
+    latitud: float
+    longitud: float
+
 
 class EstadoConductorRequest(BaseModel):
-    usuario_id: int; activo: bool
+    """Switch de Disponible / ocupado."""
 
-class EstadoViajeRequest(BaseModel):
-    viaje_id: int; nuevo_estado: str
-
-class CancelarViajeRequest(BaseModel):
-    viaje_id: int; motivo: str = "Cancelado por usuario/conductor"
-
-class IniciarViajeRequest(BaseModel):
-    viaje_id: int; clave_ingresada: str
-
-class EstadoConductorPut(BaseModel):
+    usuario_id: int
     activo: bool
 
+
+class EstadoViajeRequest(BaseModel):
+    """Cambio de flujo del viaje."""
+
+    viaje_id: int
+    nuevo_estado: str
+
+
+class CancelarViajeRequest(BaseModel):
+    """Cancelación de viaje con motivo opcional."""
+
+    viaje_id: int
+    motivo: str = "Cancelado por usuario/conductor"
+
+
+class IniciarViajeRequest(BaseModel):
+    """Validación de la clave de seguridad para iniciar la carrera."""
+
+    viaje_id: int
+    clave_ingresada: str
+
+
+class EstadoConductorPut(BaseModel):
+    """DTO simple para actualizaciones de estado - vía PUT."""
+
+    activo: bool
+
+
 class AdminConductorUpdateRequest(BaseModel):
+    """
+    Edición de perfil de conductor por parte de un Administrador.
+    """
+
     usuario_id: int
     email: Optional[str] = None
     nombre: Optional[str] = None
@@ -460,46 +733,107 @@ class AdminConductorUpdateRequest(BaseModel):
     vehiculo_placa: Optional[str] = None
     password: Optional[str] = None
 
-# -----------------------------------------------------------------------------
-# CONFIGURACIï¿½N APP & ADMIN
-# -----------------------------------------------------------------------------
-app = FastAPI(title="Taxi App API", description="API REST")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# CONFIGURACIÓN DEL SERVIDOR Y PANEL ADMINISTRATIVO
+app = FastAPI(title="Taxi App API", description="API REST")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuración del Panel de Administración
 if engine:
     admin = Admin(app, engine, title="Taxi Admin")
-    class UsuarioAdmin(ModelView, model=Usuario): column_list = [Usuario.id, Usuario.email, Usuario.role]
-    class ClienteAdmin(ModelView, model=Cliente): column_list = [Cliente.id_cliente, Cliente.nom_apell, Cliente.ciudad]
-    class ConductorAdmin(ModelView, model=Conductor): column_list = [Conductor.id_conductor, Conductor.nom_apell, Conductor.activo]
-    class VehiculoAdmin(ModelView, model=Vehiculo): column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.modelo]
-    class ViajeAdmin(ModelView, model=Viaje): column_list = [Viaje.id, Viaje.estado, Viaje.tarifa, Viaje.origen]
-    class EmergenciaAdmin(ModelView, model=Emergencia): column_list = [Emergencia.id, Emergencia.nombre_contacto]
-    class AlertaAdmin(ModelView, model=Alerta): column_list = [Alerta.id, Alerta.ubicacion, Alerta.fecha]
-    class AdministradorAdmin(ModelView, model=Administrador): column_list = [Administrador.id, Administrador.nom_apell]
 
-    admin.add_view(UsuarioAdmin); admin.add_view(ClienteAdmin); admin.add_view(ConductorAdmin)
-    admin.add_view(VehiculoAdmin); admin.add_view(ViajeAdmin); admin.add_view(EmergenciaAdmin)
-    admin.add_view(AlertaAdmin); admin.add_view(AdministradorAdmin)
+    class UsuarioAdmin(ModelView, model=Usuario):
+        column_list = [Usuario.id, Usuario.email, Usuario.role]
+        name = "Usuario"
+        name_plural = "Usuarios"
 
+    class ClienteAdmin(ModelView, model=Cliente):
+        column_list = [Cliente.id_cliente, Cliente.nom_apell, Cliente.ciudad]
+        name = "Cliente"
+        name_plural = "Clientes"
+
+    class ConductorAdmin(ModelView, model=Conductor):
+        column_list = [Conductor.id_conductor, Conductor.nom_apell, Conductor.activo]
+        name = "Conductor"
+        name_plural = "Conductores"
+
+    class PropietarioAdmin(ModelView, model=Propietario):
+        column_list = [Propietario.id, Propietario.nom_apell, Propietario.cedula]
+        name = "Propietario"
+        name_plural = "Propietarios"
+
+    class VehiculoAdmin(ModelView, model=Vehiculo):
+        column_list = [Vehiculo.id, Vehiculo.placa, Vehiculo.modelo]
+        name = "Vehículo"
+        name_plural = "Vehículos"
+
+    class ViajeAdmin(ModelView, model=Viaje):
+        column_list = [Viaje.id, Viaje.estado, Viaje.tarifa, Viaje.origen]
+        name = "Viaje"
+        name_plural = "Viajes"
+
+    class EmergenciaAdmin(ModelView, model=Emergencia):
+        column_list = [Emergencia.id, Emergencia.nombre_contacto]
+        name = "Contacto SOS"
+        name_plural = "Contactos SOS"
+
+    class AlertaAdmin(ModelView, model=Alerta):
+        column_list = [Alerta.id, Alerta.ubicacion, Alerta.fecha]
+        name = "Alerta Pánico"
+        name_plural = "Alertas Pánico"
+
+    class AdministradorAdmin(ModelView, model=Administrador):
+        column_list = [Administrador.id, Administrador.nom_apell]
+        name = "Administrador"
+        name_plural = "Administradores"
+
+    # Registrar las vistas en el panel
+    admin.add_view(UsuarioAdmin)
+    admin.add_view(ClienteAdmin)
+    admin.add_view(ConductorAdmin)
+    admin.add_view(PropietarioAdmin)
+    admin.add_view(VehiculoAdmin)
+    admin.add_view(ViajeAdmin)
+    admin.add_view(EmergenciaAdmin)
+    admin.add_view(AlertaAdmin)
+    admin.add_view(AdministradorAdmin)
+
+
+# Dependencia para obtener la sesión de base de datos en cada petición
 async def get_db():
-    if not engine: raise HTTPException(status_code=500, detail="Error DB: Engine no inicializado")
-    async with async_session() as session: yield session
+    if not engine:
+        raise HTTPException(
+            status_code=500,
+            detail="Error Crítico: El motor de base de datos no se inició.",
+        )
+    async with async_session() as session:
+        yield session
 
-# =============================================================================
-# ENDPOINTS API
-# =============================================================================
 
+# ENDPOINTS API - RUTA RAÍZ
 @app.get("/")
-def leer_raiz(): return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
+def leer_raiz():
+    """
+    Endpoint para verificar rápidamente si el servidor está respondiendo.
+    """
+    return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
 
-# ---------------------------------------------------------------------------
-# REPORTES (ADMIN)
-# ---------------------------------------------------------------------------
 
+# REPORTES (ADMINISTRADOR)
 @app.get("/reportes/viajes/conductores")
 async def reportes_viajes_conductores(db: AsyncSession = Depends(get_db)):
+    """
+    Obtiene el historial de viajes que fueron asignados a un conductor.
+    """
     try:
-        query = text("""
+        query = text(
+            """
             SELECT v.id, v.origen, v.destino, v.estado, v.tarifa, v.fecha_creacion,
                    c.nom_apell as conductor_nombre,
                    cli.nom_apell as cliente_nombre
@@ -508,18 +842,22 @@ async def reportes_viajes_conductores(db: AsyncSession = Depends(get_db)):
             LEFT JOIN clientes cli ON v.cliente_id = cli.usuario_id
             WHERE v.conductor_id IS NOT NULL
             ORDER BY v.fecha_creacion DESC
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{
-            "id": r.id,
-            "origen": r.origen,
-            "destino": r.destino,
-            "estado": r.estado,
-            "tarifa": r.tarifa,
-            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
-            "conductor": r.conductor_nombre or "Conductor",
-            "pasajero": r.cliente_nombre or "Cliente",
-        } for r in res.fetchall()]
+        return [
+            {
+                "id": r.id,
+                "origen": r.origen,
+                "destino": r.destino,
+                "estado": r.estado,
+                "tarifa": r.tarifa,
+                "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+                "conductor": r.conductor_nombre or "Conductor",
+                "pasajero": r.cliente_nombre or "Cliente",
+            }
+            for r in res.fetchall()
+        ]
     except Exception as e:
         return {"error": str(e)}
 
@@ -527,7 +865,8 @@ async def reportes_viajes_conductores(db: AsyncSession = Depends(get_db)):
 @app.get("/reportes/viajes/clientes")
 async def reportes_viajes_clientes(db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT v.id, v.origen, v.destino, v.estado, v.tarifa, v.fecha_creacion,
                    c.nom_apell as conductor_nombre,
                    cli.nom_apell as cliente_nombre
@@ -535,18 +874,22 @@ async def reportes_viajes_clientes(db: AsyncSession = Depends(get_db)):
             LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
             LEFT JOIN clientes cli ON v.cliente_id = cli.usuario_id
             ORDER BY v.fecha_creacion DESC
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{
-            "id": r.id,
-            "origen": r.origen,
-            "destino": r.destino,
-            "estado": r.estado,
-            "tarifa": r.tarifa,
-            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
-            "conductor": r.conductor_nombre or "Conductor",
-            "pasajero": r.cliente_nombre or "Cliente",
-        } for r in res.fetchall()]
+        return [
+            {
+                "id": r.id,
+                "origen": r.origen,
+                "destino": r.destino,
+                "estado": r.estado,
+                "tarifa": r.tarifa,
+                "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+                "conductor": r.conductor_nombre or "Conductor",
+                "pasajero": r.cliente_nombre or "Cliente",
+            }
+            for r in res.fetchall()
+        ]
     except Exception as e:
         return {"error": str(e)}
 
@@ -554,7 +897,8 @@ async def reportes_viajes_clientes(db: AsyncSession = Depends(get_db)):
 @app.get("/reportes/sos/conductores")
 async def reportes_sos_conductores(db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT a.id, a.ubicacion, a.mensaje_extra, a.fecha,
                    c.nom_apell as nombre, u.email
             FROM alertas a
@@ -562,16 +906,20 @@ async def reportes_sos_conductores(db: AsyncSession = Depends(get_db)):
             LEFT JOIN conductores c ON a.usuario_id = c.usuario_id
             WHERE u.role = 'conductor'
             ORDER BY a.fecha DESC
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{
-            "id": r.id,
-            "ubicacion": r.ubicacion,
-            "mensaje": r.mensaje_extra,
-            "fecha": r.fecha.isoformat() if r.fecha else None,
-            "nombre": r.nombre or "Conductor",
-            "email": r.email,
-        } for r in res.fetchall()]
+        return [
+            {
+                "id": r.id,
+                "ubicacion": r.ubicacion,
+                "mensaje": r.mensaje_extra,
+                "fecha": r.fecha.isoformat() if r.fecha else None,
+                "nombre": r.nombre or "Conductor",
+                "email": r.email,
+            }
+            for r in res.fetchall()
+        ]
     except Exception as e:
         return {"error": str(e)}
 
@@ -579,7 +927,8 @@ async def reportes_sos_conductores(db: AsyncSession = Depends(get_db)):
 @app.get("/reportes/sos/clientes")
 async def reportes_sos_clientes(db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT a.id, a.ubicacion, a.mensaje_extra, a.fecha,
                    c.nom_apell as nombre, u.email
             FROM alertas a
@@ -587,65 +936,131 @@ async def reportes_sos_clientes(db: AsyncSession = Depends(get_db)):
             LEFT JOIN clientes c ON a.usuario_id = c.usuario_id
             WHERE u.role = 'cliente'
             ORDER BY a.fecha DESC
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{
-            "id": r.id,
-            "ubicacion": r.ubicacion,
-            "mensaje": r.mensaje_extra,
-            "fecha": r.fecha.isoformat() if r.fecha else None,
-            "nombre": r.nombre or "Cliente",
-            "email": r.email,
-        } for r in res.fetchall()]
+        return [
+            {
+                "id": r.id,
+                "ubicacion": r.ubicacion,
+                "mensaje": r.mensaje_extra,
+                "fecha": r.fecha.isoformat() if r.fecha else None,
+                "nombre": r.nombre or "Cliente",
+                "email": r.email,
+            }
+            for r in res.fetchall()
+        ]
     except Exception as e:
         return {"error": str(e)}
 
-# --- LOGIN Y REGISTROS Bï¿½SICOS ---
 
+# ENDPOINT: INICIO DE SESIÓN (LOGIN)
 @app.post("/login")
 async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Verifica credenciales y determina los permisos del usuario.
+    """
     try:
-        res = await db.execute(text("SELECT id, email, password_hash, role, must_change_password FROM usuarios WHERE email = :email"), {"email": datos.email})
+        # Buscar usuario por email
+        res = await db.execute(
+            text(
+                "SELECT id, email, password_hash, role, must_change_password FROM usuarios WHERE email = :email"
+            ),
+            {"email": datos.email},
+        )
         user = res.fetchone()
-        
-        if not user: return {"error": "Usuario no encontrado"}
-        if user.password_hash != datos.password: return {"error": "Contraseï¿½a incorrecta"}
 
+        # Validaciones básicas
+        if not user:
+            return {"error": "Usuario no encontrado"}
+        if not verificar_password(datos.password, user.password_hash):
+            return {"error": "Contraseña incorrecta"}
+
+        # Obtener nombre real y determinar roles secundarios
         nombre_real = "Usuario"
+        es_conductor_tambien = False
         try:
-            if user.role == 'cliente':
-                res_cli = (await db.execute(text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
-                if res_cli: nombre_real = res_cli.nom_apell
-            elif user.role == 'conductor':
-                res_cond = (await db.execute(text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"), {"uid": user.id})).fetchone()
-                if res_cond: nombre_real = res_cond.nom_apell
-        except Exception: pass
+            if user.role == "cliente":
+                res_cli = (
+                    await db.execute(
+                        text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
+                if res_cli:
+                    nombre_real = res_cli.nom_apell
 
-        return dict(mensaje='Login OK', usuario=dict(id=user.id, nombre=nombre_real, role=user.role, must_change_password=bool(user.must_change_password)))
+            elif user.role == "conductor":
+                res_cond = (
+                    await db.execute(
+                        text(
+                            "SELECT nom_apell FROM conductores WHERE usuario_id = :uid"
+                        ),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
+                if res_cond:
+                    nombre_real = res_cond.nom_apell
+                es_conductor_tambien = True
+
+            elif user.role == "propietario":
+                res_prop = (
+                    await db.execute(
+                        text(
+                            "SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"
+                        ),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
+                if res_prop:
+                    nombre_real = res_prop.nom_apell
+
+                # VERIFICAMOS SI EL DUEÑO TAMBIÉN ES CONDUCTOR
+                check_cond = (
+                    await db.execute(
+                        text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                        {"u": user.id},
+                    )
+                ).scalar()
+                if check_cond:
+                    es_conductor_tambien = True
+
+        except Exception:
+            pass
+        # Respuesta final al Frontend
+        return {
+            "mensaje": "Login OK",
+            "usuario": {
+                "id": user.id,
+                "nombre": nombre_real,
+                "role": user.role,
+                "es_conductor": es_conductor_tambien,
+                "must_change_password": bool(user.must_change_password),
+            },
+        }
     except Exception as e:
         return {"error": f"Error interno: {str(e)}"}
 
 
-@app.get("/debug/supabase")
-async def debug_supabase():
-    url = SUPABASE_URL
-    key = SUPABASE_SERVICE_ROLE or ""
-    return {
-        "supabase_url": url,
-        "service_role_len": len(key),
-        "service_role_prefix": key[:6] if key else "",
-        "service_role_suffix": key[-6:] if key else "",
-    }
+# ENDPOINT: SINCRONIZACIÓN DE AUTENTICACIÓN
 @app.post("/auth/sync")
 async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Valida el token recibido desde Supabase (Google/etc) y
+    sincroniza el usuario con la base de datos local.
+    """
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
-        return {"error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"}
+        return {
+            "error": "Supabase Auth no configurado (SUPABASE_URL/SUPABASE_SERVICE_ROLE)"
+        }
 
+    # Valida el Token contra la API de Supabase
     auth_user = None
     admin_error = None
     token_error = None
 
     try:
+        # Intento 1: Consultar como Admin
         url = f"{SUPABASE_URL}/auth/v1/admin/users/{datos.supabase_uid}"
         headers = {
             "apikey": SUPABASE_SERVICE_ROLE,
@@ -659,12 +1074,18 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         else:
             try:
                 body = resp.json()
-                admin_error = body.get("msg") or body.get("message") or body.get("error") or str(body)
+                admin_error = (
+                    body.get("msg")
+                    or body.get("message")
+                    or body.get("error")
+                    or str(body)
+                )
             except Exception:
                 admin_error = resp.text or f"HTTP {resp.status_code}"
     except Exception as e:
         admin_error = f"Error validando Supabase (admin): {str(e)}"
 
+    # Intento 2: Consultar como Usuario
     if not auth_user and datos.access_token:
         try:
             url = f"{SUPABASE_URL}/auth/v1/user"
@@ -679,15 +1100,24 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
             else:
                 try:
                     body = resp.json()
-                    token_error = body.get("msg") or body.get("message") or body.get("error") or str(body)
+                    token_error = (
+                        body.get("msg")
+                        or body.get("message")
+                        or body.get("error")
+                        or str(body)
+                    )
                 except Exception:
                     token_error = resp.text or f"HTTP {resp.status_code}"
         except Exception as e:
             token_error = f"Error validando Supabase (token): {str(e)}"
 
     if not auth_user:
-        return {"error": admin_error or token_error or "No se pudo validar usuario en Supabase"}
-
+        return {
+            "error": admin_error
+            or token_error
+            or "No se pudo validar usuario en Supabase"
+        }
+    # Validaciones de Seguridad
     email_auth = (auth_user.get("email") or "").lower()
     if email_auth and email_auth != datos.email.lower():
         return {"error": "Email no coincide con el uid de Supabase"}
@@ -702,24 +1132,34 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
                 f_nac = datetime.strptime(datos.fecha_nacimiento, "%Y-%m-%d").date()
             except Exception:
                 f_nac = None
-
+        # Busca usuario en Base de Datos Local
         res = await db.execute(
-            text("SELECT id, email, role, must_change_password FROM usuarios WHERE email = :email"),
+            text(
+                "SELECT id, email, role, must_change_password FROM usuarios WHERE email = :email"
+            ),
             {"email": datos.email},
         )
         user = res.fetchone()
+
         if not user:
             return {"error": "Usuario no encontrado en backend"}
-
+        # Sincroniza datos del perfil CLIENTE si aplica
         if user.role == "cliente":
             try:
-                exists_cli = (await db.execute(
-                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
-                    {"u": user.id},
-                )).scalar()
+                exists_cli = (
+                    await db.execute(
+                        text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                        {"u": user.id},
+                    )
+                ).scalar()
                 if not exists_cli:
                     meta = auth_user.get("user_metadata") or {}
-                    nombre_meta = datos.nombre or meta.get("nombre") or meta.get("name") or "Cliente"
+                    nombre_meta = (
+                        datos.nombre
+                        or meta.get("nombre")
+                        or meta.get("name")
+                        or "Cliente"
+                    )
                     await db.execute(
                         text(
                             "INSERT INTO clientes (usuario_id, nom_apell, pais, ciudad, telefono, fecha_nacimiento, tipo_documento, numero_documento) "
@@ -738,7 +1178,17 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
                     )
                     await db.commit()
                 else:
-                    if any([datos.nombre, datos.pais, datos.ciudad, datos.telefono, datos.fecha_nacimiento, datos.tipo_documento, datos.numero_documento]):
+                    if any(
+                        [
+                            datos.nombre,
+                            datos.pais,
+                            datos.ciudad,
+                            datos.telefono,
+                            datos.fecha_nacimiento,
+                            datos.tipo_documento,
+                            datos.numero_documento,
+                        ]
+                    ):
                         await db.execute(
                             text(
                                 "UPDATE clientes SET "
@@ -766,50 +1216,102 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
             except Exception:
                 await db.rollback()
 
+        # Obtiene nombre real y roles
         nombre_real = "Usuario"
+        es_conductor_tambien = False
         try:
+            # ES CLIENTE
             if user.role == "cliente":
-                res_cli = (await db.execute(
-                    text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"),
-                    {"uid": user.id},
-                )).fetchone()
+                res_cli = (
+                    await db.execute(
+                        text("SELECT nom_apell FROM clientes WHERE usuario_id = :uid"),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
                 if res_cli:
                     nombre_real = res_cli.nom_apell
+            # ES CONDUCTOR
             elif user.role == "conductor":
-                res_cond = (await db.execute(
-                    text("SELECT nom_apell FROM conductores WHERE usuario_id = :uid"),
-                    {"uid": user.id},
-                )).fetchone()
+                res_cond = (
+                    await db.execute(
+                        text(
+                            "SELECT nom_apell FROM conductores WHERE usuario_id = :uid"
+                        ),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
                 if res_cond:
                     nombre_real = res_cond.nom_apell
+                es_conductor_tambien = True
+            # ES PROPIETARIO
+            elif user.role == "propietario":
+                res_prop = (
+                    await db.execute(
+                        text(
+                            "SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"
+                        ),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
+                # ES PROPIETARIO Y CONDUCTOR
+                if res_prop:
+                    nombre_real = res_prop.nom_apell
+                check_cond = (
+                    await db.execute(
+                        text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                        {"u": user.id},
+                    )
+                ).scalar()
+
+                if check_cond:
+                    es_conductor_tambien = True
+            # ES ADMIN
             elif user.role == "admin":
-                res_admin = (await db.execute(
-                    text("SELECT nom_apell FROM administradores WHERE usuario_id = :uid"),
-                    {"uid": user.id},
-                )).fetchone()
+                res_admin = (
+                    await db.execute(
+                        text(
+                            "SELECT nom_apell FROM administradores WHERE usuario_id = :uid"
+                        ),
+                        {"uid": user.id},
+                    )
+                ).fetchone()
                 if res_admin:
                     nombre_real = res_admin.nom_apell
+
         except Exception:
             pass
 
+        lista_roles = [user.role]
+        if es_conductor_tambien and user.role != "conductor":
+            lista_roles.append("conductor")
+
+        # Respuesta Final (JSON)
         return {
             "usuario": {
                 "id": user.id,
                 "nombre": nombre_real,
                 "role": user.role,
-                "roles_disponibles": [user.role],
-                 'must_change_password': bool(user.must_change_password),
+                "es_conductor": es_conductor_tambien,
+                "roles_disponibles": lista_roles,
+                "must_change_password": bool(user.must_change_password),
             }
         }
     except Exception as e:
         return {"error": f"Error interno: {str(e)}"}
+
+
+# ENDPOINT: REGISTRO DE USUARIOS (CLIENTES / PASAJEROS)
 @app.post("/registrar_usuario")
-async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)):
+async def registrar_usuario(
+    datos: UsuarioRegistroRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        existing_id = (await db.execute(
-            text("SELECT id FROM usuarios WHERE email = :e"),
-            {"e": datos.email},
-        )).scalar()
+        existing_id = (
+            await db.execute(
+                text("SELECT id FROM usuarios WHERE email = :e"),
+                {"e": datos.email},
+            )
+        ).scalar()
 
         f_nac = None
         if datos.fecha_nacimiento:
@@ -820,10 +1322,12 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
 
         if existing_id:
             try:
-                exists_cli = (await db.execute(
-                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
-                    {"u": existing_id},
-                )).scalar()
+                exists_cli = (
+                    await db.execute(
+                        text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                        {"u": existing_id},
+                    )
+                ).scalar()
 
                 if not exists_cli:
                     await db.execute(
@@ -870,13 +1374,20 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                 return {"mensaje": "Perfil actualizado", "id": existing_id}
             except Exception:
                 await db.rollback()
-                return {"error": "No se pudo actualizar perfil"}
+                return {"error": f"No se pudo actualizar perfil: {str(e)}"}
 
-        uid = (await db.execute(
-            text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
-            {"e": datos.email, "p": datos.password, "r": "cliente"},
-        )).scalar()
+        password_segura = obtener_hash_password(datos.password)
+        # Insertar en tabla Usuarios y obtener ID
+        uid = (
+            await db.execute(
+                text(
+                    "INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"
+                ),
+                {"e": datos.email, "p": password_segura, "r": "cliente"},
+            )
+        ).scalar()
 
+        # Insertar en tabla Clientes
         try:
             await db.execute(
                 text(
@@ -894,22 +1405,23 @@ async def registrar_usuario(datos: UsuarioRegistroRequest, db: AsyncSession = De
                     "nd": datos.numero_documento,
                 },
             )
-        except Exception:
-            pass
+            await db.commit()
+            return {"mensaje": "Usuario registrado exitosamente", "id": uid}
 
-        await db.commit()
-        return {"mensaje": "Registrado", "id": uid}
+        except Exception as e:
+            await db.rollback()
+            return {"error": f"Error creando perfil de cliente: {str(e)}"}
     except Exception as e:
         await db.rollback()
         return {"error": str(e)}
 
 
+# ENDPOINT: REGISTRO DE CLIENTE CON FOTOS
 @app.post("/registrar_usuario_fotos")
 async def registrar_usuario_fotos(
     nombre: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
-    role: str = Form("cliente"),
     telefono: Optional[str] = Form(None),
     fecha_nacimiento: Optional[str] = Form(None),
     pais: Optional[str] = Form(None),
@@ -930,23 +1442,30 @@ async def registrar_usuario_fotos(
             except Exception:
                 f_nac = None
 
-        existing_id = (await db.execute(
-            text("SELECT id FROM usuarios WHERE email = :e"),
-            {"e": email},
-        )).scalar()
-
-        role_db = (role or "cliente").lower()
+        existing_id = (
+            await db.execute(
+                text("SELECT id FROM usuarios WHERE email = :e"),
+                {"e": email},
+            )
+        ).scalar()
 
         if not existing_id:
-            existing_id = (await db.execute(
-                text("INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"),
-                {"e": email, "p": password, "r": role_db},
-            )).scalar()
+            password_segura = obtener_hash_password(password)
+            existing_id = (
+                await db.execute(
+                    text(
+                        "INSERT INTO usuarios (email, password_hash, role) VALUES (:e, :p, :r) RETURNING id"
+                    ),
+                    {"e": email, "p": password_segura, "r": "cliente"},
+                )
+            ).scalar()
 
-        exists_cli = (await db.execute(
-            text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
-            {"u": existing_id},
-        )).scalar()
+        exists_cli = (
+            await db.execute(
+                text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                {"u": existing_id},
+            )
+        ).scalar()
 
         if not exists_cli:
             await db.execute(
@@ -992,6 +1511,7 @@ async def registrar_usuario_fotos(
 
         await db.commit()
 
+        # SubE fotos al storage
         ok_frente = await _storage_upload(
             f"clientes/{existing_id}/foto_cedula_frente",
             foto_cedulafrente,
@@ -1013,24 +1533,30 @@ async def registrar_usuario_fotos(
         params = {"uid": existing_id}
         if ok_frente:
             updates.append("foto_cedulafrente = :ff")
+            updates.append("foto_cedulafrente_url = NULL")
             params["ff"] = "OK"
+
         if ok_posterior:
             updates.append("foto_cedulaposterior = :fa")
+            updates.append("foto_cedulaposterior_url = NULL")
             params["fa"] = "OK"
+
         if ok_selfie:
             updates.append("foto_selfieci = :fs")
+            updates.append("foto_selfieci_url = NULL")
             params["fs"] = "OK"
+
         if ok_pasaporte:
             updates.append("foto_pasaporte = :fp")
-            params["fp"] = "OK"
-        if updates:
-            updates.append("foto_cedulafrente_url = NULL")
-            updates.append("foto_cedulaposterior_url = NULL")
-            updates.append("foto_selfieci_url = NULL")
             updates.append("foto_pasaporte_url = NULL")
+            params["fp"] = "OK"
+
+        if updates:
             await db.execute(
                 text(
-                    "UPDATE clientes SET " + ", ".join(updates) + " WHERE usuario_id = :uid"
+                    "UPDATE clientes SET "
+                    + ", ".join(updates)
+                    + " WHERE usuario_id = :uid"
                 ),
                 params,
             )
@@ -1040,236 +1566,343 @@ async def registrar_usuario_fotos(
     except Exception as e:
         await db.rollback()
         return {"error": str(e)}
+
+
+# ENDPOINT: REGISTRO ADMINISTRATIVO (CONDUCTORES Y PROPIETARIOS)
 @app.post("/api/admin/registrar_conductor_auth")
-async def registrar_conductor_auth(datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)):
+async def registrar_conductor_auth(
+    datos: RegistroConductorRequest, db: AsyncSession = Depends(get_db)
+):
+    """
+    Crea el vehículo (si no existe),
+    crea el usuario y asigna el rol (Propietario/Conductor).
+    """
     try:
+        # Normalización de datos
         email_norm = (datos.email or "").strip().lower()
         if not email_norm:
             return {"error": "Correo requerido"}
-        role_db = (datos.role or "conductor").lower()
-        existing_row = (await db.execute(
-            text("SELECT id, role FROM usuarios WHERE email = :e"),
-            {"e": email_norm},
-        )).fetchone()
-        if existing_row:
-            if (existing_row.role or "").lower() != "conductor":
-                return {"error": "El correo ya estï¿½ registrado"}
-            exists_cond = (await db.execute(
-                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
-                {"u": existing_row.id},
-            )).scalar()
-            if exists_cond:
-                return {"ok": True, "mensaje": "Conductor ya existente"}
-
-            vehiculo_id = (await db.execute(
-                text("SELECT id FROM vehiculos WHERE placa = :p"),
-                {"p": datos.vehiculo_placa},
-            )).scalar()
-            if not vehiculo_id:
-                return {"error": "Vehï¿½culo no encontrado"}
-
-            await db.execute(
-                text(
-                    "INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, cedula, activo) "
-                    "VALUES (:uid, :vid, :nom, :tel, :fn, :ced, true)"
-                ),
-                {
-                    "uid": existing_row.id,
-                    "vid": vehiculo_id,
-                    "nom": datos.nombre,
-                    "tel": datos.telefono,
-                    "fn": datos.fecha_nacimiento,
-                    "ced": datos.cedula,
-                },
-            )
-            await db.commit()
-            return {"ok": True, "mensaje": "Conductor creado para usuario existente"}
 
         if not datos.cedula:
-            return {"error": "Cedula requerida para clave inicial"}
+            return {"error": "Cédula requerida (se usará como contraseña temporal)"}
+
+        role_db = (datos.role or "conductor").lower()
+
+        # Verifica si el vehículo ya existe
+        vehiculo_id = (
+            await db.execute(
+                text("SELECT id FROM vehiculos WHERE placa = :p"),
+                {"p": datos.vehiculo_placa},
+            )
+        ).scalar()
+
+        if not vehiculo_id:
+            # Si no existe, lo crea
+            vehiculo_id = (
+                await db.execute(
+                    text(
+                        "INSERT INTO vehiculos (marca, modelo, placa, color, anio) "
+                        "VALUES (:m, :mo, :p, :c, :a) RETURNING id"
+                    ),
+                    {
+                        "m": datos.vehiculo_marca,
+                        "mo": datos.vehiculo_modelo,
+                        "p": datos.vehiculo_placa,
+                        "c": datos.vehiculo_color,
+                        "a": datos.vehiculo_anio,
+                    },
+                )
+            ).scalar()
+
+        # Crea Usuario en Supabase
         supa_user = None
         supa_res = await _supabase_admin_create_user(email_norm, datos.cedula, role_db)
+
         if isinstance(supa_res, dict) and supa_res.get("error"):
+            # Si ya existe en Supabase, intenta recuperarlo
             err_msg = str(supa_res.get("error"))
             if _is_supabase_user_exists_error(err_msg):
                 supa_user = await _supabase_admin_get_user_by_email(datos.email)
             else:
-                return {"error": supa_res["error"]}
+                return {"error": f"Error Supabase: {supa_res['error']}"}
         else:
             supa_user = supa_res
 
-        vehiculo_id = (await db.execute(
-            text("SELECT id FROM vehiculos WHERE placa = :p"),
-            {"p": datos.vehiculo_placa},
-        )).scalar()
+        supabase_uid = supa_user.get("id") if supa_user else None
 
-        if not vehiculo_id:
-            vehiculo_id = (await db.execute(
-                text(
-                    "INSERT INTO vehiculos (marca, modelo, placa, color, anio) "
-                    "VALUES (:m, :mo, :p, :c, :a) RETURNING id"
-                ),
-                {
-                    "m": datos.vehiculo_marca,
-                    "mo": datos.vehiculo_modelo,
-                    "p": datos.vehiculo_placa,
-                    "c": datos.vehiculo_color,
-                    "a": datos.vehiculo_anio,
-                },
-            )).scalar()
+        # Verifica si existe en BD Local
+        existing_user_id = (
+            await db.execute(
+                text("SELECT id FROM usuarios WHERE email = :e"),
+                {"e": email_norm},
+            )
+        ).scalar()
 
-        uid = (await db.execute(
-            text(
-                "INSERT INTO usuarios (email, password_hash, role, must_change_password) "
-                "VALUES (:e, :p, :r, true) RETURNING id"
-            ),
-            {"e": email_norm, "p": datos.cedula, "r": role_db},
-        )).scalar()
-        try:
-            if isinstance(supa_user, dict) and supa_user.get("id"):
+        uid = existing_user_id
+
+        if not existing_user_id:
+            uid = (
                 await db.execute(
-                    text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
-                    {"suid": supa_user.get("id"), "uid": uid},
+                    text(
+                        "INSERT INTO usuarios (email, password_hash, role, must_change_password, supabase_uid) "
+                        "VALUES (:e, :p, :r, true, :suid) RETURNING id"
+                    ),
+                    {
+                        "e": email_norm,
+                        "p": obtener_hash_password(datos.cedula),
+                        "r": role_db,
+                        "suid": supabase_uid,
+                    },
                 )
-        except Exception:
-            pass
+            ).scalar()
+        else:
+            await db.execute(
+                text(
+                    "UPDATE usuarios SET role = :r, supabase_uid = :suid WHERE id = :uid"
+                ),
+                {"r": role_db, "suid": supabase_uid, "uid": uid},
+            )
 
-        await db.execute(
-            text(
-                "INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, cedula, activo) "
-                "VALUES (:uid, :vid, :nom, :tel, :fn, :ced, true)"
-            ),
-            {
-                "uid": uid,
-                "vid": vehiculo_id,
-                "nom": datos.nombre,
-                "tel": datos.telefono,
-                "fn": datos.fecha_nacimiento,
-                "ced": datos.cedula,
-            },
-        )
+        # LÓGICA DE ROLES (GUARDA EN TABLAS ESPECÍFICAS)
+
+        # Si es PROPIETARIO
+        if role_db == "propietario":
+            exists_prop = (
+                await db.execute(
+                    text("SELECT 1 FROM propietarios WHERE usuario_id = :u"), {"u": uid}
+                )
+            ).scalar()
+            if not exists_prop:
+                await db.execute(
+                    text(
+                        "INSERT INTO propietarios (usuario_id, nom_apell, cedula, telefono, fecha_nacimiento) "
+                        "VALUES (:uid, :nom, :ced, :tel, :fn)"
+                    ),
+                    {
+                        "uid": uid,
+                        "nom": datos.nombre,
+                        "ced": datos.cedula,
+                        "tel": datos.telefono,
+                        "fn": datos.fecha_nacimiento,
+                    },
+                )
+
+            # Guarda también en CONDUCTORES
+            exists_cond = (
+                await db.execute(
+                    text("SELECT 1 FROM conductores WHERE usuario_id = :u"), {"u": uid}
+                )
+            ).scalar()
+            if not exists_cond:
+                await db.execute(
+                    text(
+                        "INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, cedula, activo) "
+                        "VALUES (:uid, :vid, :nom, :tel, :fn, :ced, true)"
+                    ),
+                    {
+                        "uid": uid,
+                        "vid": vehiculo_id,
+                        "nom": datos.nombre,
+                        "tel": datos.telefono,
+                        "fn": datos.fecha_nacimiento,
+                        "ced": datos.cedula,
+                    },
+                )
+
+        # Si es CONDUCTOR
+        elif role_db == "conductor":
+            exists_cond = (
+                await db.execute(
+                    text("SELECT 1 FROM conductores WHERE usuario_id = :u"), {"u": uid}
+                )
+            ).scalar()
+            if not exists_cond:
+                await db.execute(
+                    text(
+                        "INSERT INTO conductores (usuario_id, vehiculo_id, nom_apell, telefono, fecha_nacimiento, cedula, activo) "
+                        "VALUES (:uid, :vid, :nom, :tel, :fn, :ced, true)"
+                    ),
+                    {
+                        "uid": uid,
+                        "vid": vehiculo_id,
+                        "nom": datos.nombre,
+                        "tel": datos.telefono,
+                        "fn": datos.fecha_nacimiento,
+                        "ced": datos.cedula,
+                    },
+                )
 
         await db.commit()
-        return {"ok": True}
+        return {
+            "ok": True,
+            "mensaje": f"Usuario registrado como {role_db} correctamente",
+        }
+
     except Exception as e:
         await db.rollback()
-        return {"error": str(e)}
+        return {"error": f"Error registrando flota: {str(e)}"}
 
+
+# CONSULTAS AUXILIARES Y REGISTRO DE CONDUCTORES
 @app.get("/vehiculos/placas")
 async def obtener_lista_placas(db: AsyncSession = Depends(get_db)):
     # Retorna lista simple: ["GCA-123", "PBA-456"]
     try:
-        result = await db.execute(text("SELECT placa FROM vehiculos ORDER BY placa ASC"))
+        result = await db.execute(
+            text("SELECT placa FROM vehiculos ORDER BY placa ASC")
+        )
         return [row.placa for row in result.fetchall()]
     except Exception as e:
         print(f"Error obteniendo placas: {e}")
         return []
 
+
+# PARA BUSCAR VEHICULO X PLACA EN REGISTRO CONDUCTOR
 @app.get("/vehiculos/{placa}")
 async def obtener_vehiculo_por_placa(placa: str, db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
-            SELECT v.marca, v.modelo, v.color, c.nom_apell 
+        query = text(
+            """
+            SELECT v.id, v.marca, v.modelo, v.color, p.nom_apell 
             FROM vehiculos v 
             JOIN conductores c ON c.vehiculo_id = v.id 
+            JOIN propietarios p ON p.usuario_id = c.usuario_id
             WHERE v.placa = :placa 
             LIMIT 1
-        """)
+        """
+        )
         result = await db.execute(query, {"placa": placa})
         row = result.fetchone()
-        
+
         if row:
             return {
-                "marca": f"{row.marca} {row.modelo}", 
+                "id": row.id,
+                "marca": f"{row.marca} {row.modelo}",
                 "color": row.color,
-                "dueno": row.nom_apell
+                "dueno": row.nom_apell,
             }
         else:
-            return None 
+            return None
     except Exception as e:
         print(f"Error buscando placa: {e}")
         return None
 
 
+# ENDPOINTS: VISUALIZACIÓN DE IMÁGENES Y DOCUMENTOS
 @app.get("/vehiculos/{vehiculo_id}/foto")
 async def ver_foto_vehiculo(vehiculo_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"vehiculos/{vehiculo_id}/foto_vehiculo")
     if not data:
-        url = await _get_media_url(db, "vehiculos", "foto_vehiculo_url", "id", vehiculo_id)
+        url = await _get_media_url(
+            db, "vehiculos", "foto_vehiculo_url", "id", vehiculo_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
+
 
 @app.get("/conductores/{usuario_id}/foto_perfil")
 async def ver_foto_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"conductores/{usuario_id}/foto_perfil")
     if not data:
-        url = await _get_media_url(db, "conductores", "foto_perfil_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "conductores", "foto_perfil_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
+
 
 @app.get("/conductores/{usuario_id}/cedula_front")
-async def ver_cedula_front_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
+async def ver_cedula_front_conductor(
+    usuario_id: int, db: AsyncSession = Depends(get_db)
+):
     data = await _storage_download(f"conductores/{usuario_id}/cedula_front")
     if not data:
-        url = await _get_media_url(db, "conductores", "cedula_front_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "conductores", "cedula_front_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
+
 
 @app.get("/conductores/{usuario_id}/cedula_back")
-async def ver_cedula_back_conductor(usuario_id: int, db: AsyncSession = Depends(get_db)):
+async def ver_cedula_back_conductor(
+    usuario_id: int, db: AsyncSession = Depends(get_db)
+):
     data = await _storage_download(f"conductores/{usuario_id}/cedula_back")
     if not data:
-        url = await _get_media_url(db, "conductores", "cedula_back_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "conductores", "cedula_back_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
+
 
 @app.get("/clientes/{usuario_id}/foto_cedula_frente")
-async def ver_cedula_frente_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
+async def ver_cedula_frente_cliente(
+    usuario_id: int, db: AsyncSession = Depends(get_db)
+):
     data = await _storage_download(f"clientes/{usuario_id}/foto_cedula_frente")
     if not data:
-        url = await _get_media_url(db, "clientes", "foto_cedulafrente_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "clientes", "foto_cedulafrente_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
+
 @app.get("/clientes/{usuario_id}/foto_cedula_posterior")
-async def ver_cedula_posterior_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
+async def ver_cedula_posterior_cliente(
+    usuario_id: int, db: AsyncSession = Depends(get_db)
+):
     data = await _storage_download(f"clientes/{usuario_id}/foto_cedula_posterior")
     if not data:
-        url = await _get_media_url(db, "clientes", "foto_cedulaposterior_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "clientes", "foto_cedulaposterior_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
+
 
 @app.get("/clientes/{usuario_id}/foto_selfie")
 async def ver_selfie_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"clientes/{usuario_id}/foto_selfie")
     if not data:
-        url = await _get_media_url(db, "clientes", "foto_selfieci_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "clientes", "foto_selfieci_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
 
+
 @app.get("/clientes/{usuario_id}/foto_pasaporte")
 async def ver_pasaporte_cliente(usuario_id: int, db: AsyncSession = Depends(get_db)):
     data = await _storage_download(f"clientes/{usuario_id}/foto_pasaporte")
     if not data:
-        url = await _get_media_url(db, "clientes", "foto_pasaporte_url", "usuario_id", usuario_id)
+        url = await _get_media_url(
+            db, "clientes", "foto_pasaporte_url", "usuario_id", usuario_id
+        )
         if url:
             return RedirectResponse(url)
         return JSONResponse(status_code=404, content={"error": "No encontrada"})
     return Response(content=data, media_type=_guess_mime(data))
+
+
+# ENDPOINT: REGISTRO DE CONDUCTOR
+# Permite que un conductor nuevo se registre seleccionando un vehículo
 @app.post("/registrar_conductor_existente")
 async def registrar_conductor_existente(
     placa_vinculada: str = Form(...),
@@ -1283,11 +1916,11 @@ async def registrar_conductor_existente(
     cedula_front: UploadFile = File(None),
     cedula_back: UploadFile = File(None),
     foto_perfil: UploadFile = File(None),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         role_db = (role or "conductor").lower()
-        # A. Verificar Auto
+        # Verifica Auto
         q_vehiculo = text("SELECT id FROM vehiculos WHERE placa = :placa")
         res_v = await db.execute(q_vehiculo, {"placa": placa_vinculada})
         vehiculo_id = res_v.scalar()
@@ -1302,80 +1935,101 @@ async def registrar_conductor_existente(
             except Exception:
                 f_nac = None
 
-        # B. Crear Usuario
-        # Usamos el email que viene del form, o generamos uno si no viene
+        # Crea Usuario
         email_final = (email or f"{cedula}@taxis.com").strip().lower()
-        existing_row = (await db.execute(
-            text("SELECT id, role FROM usuarios WHERE email = :e"),
-            {"e": email_final},
-        )).fetchone()
+        existing_row = (
+            await db.execute(
+                text("SELECT id, role FROM usuarios WHERE email = :e"),
+                {"e": email_final},
+            )
+        ).fetchone()
 
         if existing_row:
             if (existing_row.role or "").lower() != "conductor":
-                return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+                return JSONResponse(
+                    status_code=400, content={"error": "El correo ya existe"}
+                )
             new_user_id = existing_row.id
         else:
             supa_user = None
             supa_res = await _supabase_admin_create_user(email_final, cedula, role_db)
-            if isinstance(supa_res, dict) and supa_res.get('error'):
+            if isinstance(supa_res, dict) and supa_res.get("error"):
                 err_msg = str(supa_res.get("error"))
                 if _is_supabase_user_exists_error(err_msg):
                     supa_user = await _supabase_admin_get_user_by_email(email_final)
                 else:
-                    return JSONResponse(status_code=400, content=dict(error=supa_res['error']))
+                    return JSONResponse(
+                        status_code=400, content=dict(error=supa_res["error"])
+                    )
             else:
                 supa_user = supa_res
 
-            q_user = text("""
+            q_user = text(
+                """
                 INSERT INTO usuarios (email, password_hash, role, must_change_password)
                 VALUES (:email, :pwd, :role, true)
                 RETURNING id
-            """)
+            """
+            )
             try:
-                res_u = await db.execute(q_user, {
-                    "email": email_final,
-                    "pwd": cedula,
-                    "role": role_db
-                })
+                res_u = await db.execute(
+                    q_user, {"email": email_final, "pwd": cedula, "role": role_db}
+                )
                 new_user_id = res_u.scalar()
             except IntegrityError:
                 await db.rollback()
-                existing_dup = (await db.execute(
-                    text("SELECT id, role FROM usuarios WHERE email = :e"),
-                    {"e": email_final},
-                )).fetchone()
+                existing_dup = (
+                    await db.execute(
+                        text("SELECT id, role FROM usuarios WHERE email = :e"),
+                        {"e": email_final},
+                    )
+                ).fetchone()
                 if not existing_dup:
-                    return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+                    return JSONResponse(
+                        status_code=400, content={"error": "El correo ya existe"}
+                    )
                 if (existing_dup.role or "").lower() != "conductor":
-                    return JSONResponse(status_code=400, content={"error": "El correo ya existe con otro rol"})
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "El correo ya existe con otro rol"},
+                    )
                 new_user_id = existing_dup.id
             try:
                 if isinstance(supa_user, dict) and supa_user.get("id"):
                     await db.execute(
-                        text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
+                        text(
+                            "UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"
+                        ),
                         {"suid": supa_user.get("id"), "uid": new_user_id},
                     )
             except Exception:
                 pass
 
-        # C. Crear Conductor vinculado (si no existe)
-        exists_cond = (await db.execute(
-            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
-            {"u": new_user_id},
-        )).scalar()
+        # Crea Conductor vinculado
+        exists_cond = (
+            await db.execute(
+                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                {"u": new_user_id},
+            )
+        ).scalar()
         if not exists_cond:
-            q_conductor = text("""
+            q_conductor = text(
+                """
                 INSERT INTO conductores (usuario_id, nom_apell, telefono, fecha_nacimiento, cedula, activo, vehiculo_id)
                 VALUES (:uid, :nombre, :telf, :fn, :ced, true, :vid)
-            """)
-            await db.execute(q_conductor, {
-                "uid": new_user_id,
-                "nombre": f"{nombre} {apellido}",
-                "telf": telefono,
-                "fn": f_nac,
-                "ced": cedula,
-                "vid": vehiculo_id
-            })
+            """
+            )
+            await db.execute(
+                q_conductor,
+                {
+                    "uid": new_user_id,
+                    "nombre": f"{nombre} {apellido}",
+                    "telf": telefono,
+                    "fn": f_nac,
+                    "ced": cedula,
+                    "vid": vehiculo_id,
+                },
+            )
         else:
             await db.execute(
                 text(
@@ -1427,7 +2081,9 @@ async def registrar_conductor_existente(
             updates.append("foto_perfil_url = NULL")
             await db.execute(
                 text(
-                    "UPDATE conductores SET " + ", ".join(updates) + " WHERE usuario_id = :uid"
+                    "UPDATE conductores SET "
+                    + ", ".join(updates)
+                    + " WHERE usuario_id = :uid"
                 ),
                 params,
             )
@@ -1439,214 +2095,55 @@ async def registrar_conductor_existente(
         await db.rollback()
         print(f"Error en registro: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-@app.post("/registrar_flota_completo")
-async def registrar_flota_completo(
-    # Recibimos los campos de texto
-    vehiculo_marca: str = Form(...),
-    vehiculo_modelo: str = Form(...),
-    vehiculo_placa: str = Form(...),
-    vehiculo_color: str = Form(...),
-    
-    owner_nombre: str = Form(...),
-    owner_apellido: str = Form(...),
-    owner_cedula: str = Form(...),
-    owner_email: str = Form(...),
-    owner_fecha_nac: str = Form(...),
-    owner_telefono: str = Form(...),
-    
-    # La lista de conductores extra llega como texto JSON
-    conductores_extra: str = Form(default="[]"), 
-
-    # Recibimos los archivos (pueden ser opcionales con None)
-    cedula_front: UploadFile = File(None),
-    cedula_back: UploadFile = File(None),
-    foto_perfil: UploadFile = File(None),
-    foto_vehiculo: UploadFile = File(None),
-    
-    db: AsyncSession = Depends(get_db)
-):
-    try:
-        # 1. Crear el Usuario (Dueño)
-        email_final = owner_email.strip().lower()
-        owner_row = (await db.execute(
-            text("SELECT id, role FROM usuarios WHERE email = :e"),
-            {"e": owner_email},
-        )).fetchone()
-if owner_row:
-            # Si el usuario ya existe, verificamos que sea conductor
-            if owner_row.role != "conductor":
-                return JSONResponse(status_code=400, content={"error": "El correo ya existe con otro rol"})
-            owner_user_id = owner_row.id
-        else:
-            # Si no existe, lo creamos en Supabase y DB local
-            supa_res = await _supabase_admin_create_user(email_final, owner_cedula, "conductor")
-            if isinstance(supa_res, dict) and supa_res.get("error"):
-                # Manejo de error si ya existe en Supabase pero no en local
-                err_msg = str(supa_res.get("error"))
-                if _is_supabase_user_exists_error(err_msg):
-                     # Intentamos recuperar el usuario de Supabase si ya existía
-                     supa_user = await _supabase_admin_get_user_by_email(email_final)
-                else:
-                    return JSONResponse(status_code=400, content={"error": supa_res["error"]})
-
-            owner_user_id = (await db.execute(
-                text("INSERT INTO usuarios (email, password_hash, role, must_change_password) VALUES (:e, :p, :r, true) RETURNING id"),
-                {"e": email_final, "p": owner_cedula, "r": "conductor"},
-            )).scalar()
-            
-            # Intentamos vincular el ID de Supabase si se creó/recuperó
-            try:
-                 if 'supa_user' in locals() and supa_user and isinstance(supa_user, dict) and supa_user.get("id"):
-                    await db.execute(
-                        text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
-                        {"suid": supa_user.get("id"), "uid": owner_user_id},
-                    )
-            except Exception:
-                pass
-
-        # 2. Registrar Vehiculo
-        nuevo_auto = Vehiculo(
-            placa=vehiculo_placa,
-            marca=vehiculo_marca,
-            modelo=vehiculo_modelo,
-            color=vehiculo_color,
-            anio="2025" 
-        )
-        db.add(nuevo_auto)
-        await db.commit()
-        await db.refresh(nuevo_auto)
-
-        ok_auto = await _storage_upload(
-            f"vehiculos/{nuevo_auto.id}/foto_vehiculo",
-            foto_vehiculo,
-        )
-        if ok_auto:
-            await db.execute(
-                text("UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = NULL WHERE id = :vid"),
-                {"fv": "OK", "vid": nuevo_auto.id},
-            )
-            await db.commit()
-
-        # 3. Registrar al Dueño en tabla Conductores
-        exists_owner_cond = (await db.execute(
-            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
-            {"u": owner_user_id},
-        )).scalar()
-        if exists_owner_cond:
-            return JSONResponse(status_code=400, content={"error": "El conductor ya existe"})
-
-        nuevo_conductor = Conductor(
-            usuario_id=owner_user_id,
-            nom_apell=f"{owner_nombre} {owner_apellido}",
-            telefono=owner_telefono,
-            cedula=owner_cedula, 
-            activo=True,
-            vehiculo_id=nuevo_auto.id
-        )
-        db.add(nuevo_conductor)
-        await db.commit()
-
-        ok_front = await _storage_upload(
-            f"conductores/{owner_user_id}/cedula_front",
-            cedula_front,
-        )
-        ok_back = await _storage_upload(
-            f"conductores/{owner_user_id}/cedula_back",
-            cedula_back,
-        )
-        ok_perfil = await _storage_upload(
-            f"conductores/{owner_user_id}/foto_perfil",
-            foto_perfil,
-        )
-        updates = []
-        params = {"uid": owner_user_id}
-        if ok_front:
-            updates.append("cedula_front = :cf")
-            params["cf"] = "OK"
-        if ok_back:
-            updates.append("cedula_back = :cb")
-            params["cb"] = "OK"
-        if ok_perfil:
-            updates.append("foto_perfil = :fp")
-            params["fp"] = "OK"
-        if updates:
-            updates.append("cedula_front_url = NULL")
-            updates.append("cedula_back_url = NULL")
-            updates.append("foto_perfil_url = NULL")
-            await db.execute(
-                text(
-                    "UPDATE conductores SET " + ", ".join(updates) + " WHERE usuario_id = :uid"
-                ),
-                params,
-            )
-            await db.commit()
-
-        # 4. Registrar Conductores Extra
-        lista_conductores = json.loads(conductores_extra) 
-        
-        for extra in lista_conductores:
-            # Crear usuario para el chofer extra
-            email_extra = extra.get('email')
-            if not email_extra:
-                email_extra = f"{extra['cedula']}@chofer.com"
-                email_extra = email_extra.strip().lower()
-            
-            chofer_row = (await db.execute(
-                text("SELECT id, role FROM usuarios WHERE email = :e"),
-                {"e": email_extra},
-            )).fetchone()
-            if chofer_row:
-                if chofer_row.role != "conductor":
-                    return JSONResponse(status_code=400, content={"error": f"Email ya existe con otro rol: {email_extra}"})
-                chofer_user_id = chofer_row.id
-            else:
-                supa_res = await _supabase_admin_create_user(email_extra, extra["cedula"], "conductor")
-                if isinstance(supa_res, dict) and supa_res.get("error"):
-                    return JSONResponse(status_code=400, content={"error": supa_res["error"]})
-                chofer_user_id = (await db.execute(
-                    text("INSERT INTO usuarios (email, password_hash, role, must_change_password) VALUES (:e, :p, :r, true) RETURNING id"),
-                    {"e": email_extra, "p": extra["cedula"], "r": "conductor"},
-                )).scalar()
-
-            chofer = Conductor(
-                usuario_id=chofer_user_id,
-                nom_apell=f"{extra['nombre']} {extra['apellido']}",
-                telefono=extra.get('telefono', '0000000000'),
-                activo=True,
-                vehiculo_id=nuevo_auto.id,
-                cedula=extra['cedula']
-            )
-            db.add(chofer)
-        
-        await db.commit()
-        return {"mensaje": "Flota registrada correctamente"}
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# GESTION DE VIAJES
 @app.post("/viajes/solicitar")
 async def solicitar(v: ViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
         clave = random.choice(PALABRAS_CLAVE)
-        geo_ori = f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)" if v.origen_lng else "NULL"
-        geo_des = f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)" if v.destino_lng else "NULL"
-        
-        query = text(f"INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, {geo_ori}, {geo_des}, :clave, NOW()) RETURNING id")
-        res = await db.execute(query, {"cid": v.usuario_id, "ori": v.origen, "des": v.destino, "tar": v.tarifa, "olat": v.origen_lat, "olng": v.origen_lng, "dlat": v.destino_lat, "dlng": v.destino_lng, "clave": clave})
+        geo_ori = (
+            f"ST_GeomFromText('POINT({v.origen_lng} {v.origen_lat})', 4326)"
+            if v.origen_lng
+            else "NULL"
+        )
+        geo_des = (
+            f"ST_GeomFromText('POINT({v.destino_lng} {v.destino_lat})', 4326)"
+            if v.destino_lng
+            else "NULL"
+        )
+
+        query = text(
+            f"INSERT INTO viajes (cliente_id, origen, destino, tarifa, estado, origen_lat, origen_lng, destino_lat, destino_lng, origen_geom, destino_geom, clave_seguridad, fecha_creacion) VALUES (:cid, :ori, :des, :tar, 'pendiente', :olat, :olng, :dlat, :dlng, {geo_ori}, {geo_des}, :clave, NOW()) RETURNING id"
+        )
+        res = await db.execute(
+            query,
+            {
+                "cid": v.usuario_id,
+                "ori": v.origen,
+                "des": v.destino,
+                "tar": v.tarifa,
+                "olat": v.origen_lat,
+                "olng": v.origen_lng,
+                "dlat": v.destino_lat,
+                "dlng": v.destino_lng,
+                "clave": clave,
+            },
+        )
         vid = res.scalar()
-        
+
         await db.commit()
         return {"mensaje": "Viaje solicitado", "id_viaje": vid, "clave": clave}
-    except Exception as e: 
+    except Exception as e:
         await db.rollback()
         return {"error": str(e)}
+
 
 @app.get("/viajes/pendientes")
 async def ver_pendientes(db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT v.id, v.origen, v.destino, v.tarifa, v.estado, 
                    v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng, 
                    c.nom_apell, v.fecha_creacion
@@ -1655,72 +2152,128 @@ async def ver_pendientes(db: AsyncSession = Depends(get_db)):
             WHERE v.estado='pendiente' 
             ORDER BY v.fecha_creacion DESC
             LIMIT 50
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{"id": r.id, "origen": r.origen, "destino": r.destino, "tarifa": r.tarifa, 
-                 "estado": r.estado, "cliente": r.nom_apell or "Cliente", 
-                 "origen_lat": r.origen_lat, "origen_lng": r.origen_lng, 
-                 "destino_lat": r.destino_lat, "destino_lng": r.destino_lng,
-                 "creado_en": r.fecha_creacion.isoformat() if r.fecha_creacion else None} for r in res.fetchall()]
-    except: return []
+        return [
+            {
+                "id": r.id,
+                "origen": r.origen,
+                "destino": r.destino,
+                "tarifa": r.tarifa,
+                "estado": r.estado,
+                "cliente": r.nom_apell or "Cliente",
+                "origen_lat": r.origen_lat,
+                "origen_lng": r.origen_lng,
+                "destino_lat": r.destino_lat,
+                "destino_lng": r.destino_lng,
+                "creado_en": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            }
+            for r in res.fetchall()
+        ]
+    except:
+        return []
+
 
 @app.post("/viajes/aceptar")
 async def aceptar(d: AceptarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if st != 'pendiente': return {"error": "Viaje no disponible"}
-        
-        await db.execute(text("UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"), {"cid": d.conductor_id, "vid": d.viaje_id})
+        st = (
+            await db.execute(
+                text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id}
+            )
+        ).scalar()
+        if st != "pendiente":
+            return {"error": "Viaje no disponible"}
+
+        await db.execute(
+            text(
+                "UPDATE viajes SET conductor_id=:cid, estado='aceptado' WHERE id=:vid"
+            ),
+            {"cid": d.conductor_id, "vid": d.viaje_id},
+        )
         await db.commit()
         return {"mensaje": "Viaje aceptado"}
-    except Exception as e: 
+    except Exception as e:
         await db.rollback()
         return {"error": str(e)}
 
+
 @app.post("/viajes/validar_inicio")
-async def validar_inicio_viaje(d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)):
+async def validar_inicio_viaje(
+    d: IniciarViajeRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        real = (await db.execute(text("SELECT clave_seguridad FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if not real: return {"error": "Datos no encontrados", "exito": False}
-        
+        real = (
+            await db.execute(
+                text("SELECT clave_seguridad FROM viajes WHERE id=:vid"),
+                {"vid": d.viaje_id},
+            )
+        ).scalar()
+        if not real:
+            return {"error": "Datos no encontrados", "exito": False}
+
         if d.clave_ingresada.upper().strip() == real.upper().strip():
-            await db.execute(text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"), {"vid": d.viaje_id})
+            await db.execute(
+                text("UPDATE viajes SET estado='en_curso' WHERE id=:vid"),
+                {"vid": d.viaje_id},
+            )
             await db.commit()
             return {"mensaje": "OK", "exito": True}
-        else: return {"error": "Clave incorrecta", "exito": False}
-    except Exception as e: 
+        else:
+            return {"error": "Clave incorrecta", "exito": False}
+    except Exception as e:
         await db.rollback()
         return {"error": str(e), "exito": False}
 
+
 @app.post("/viajes/actualizar_estado")
-async def actualizar_estado_viaje(d: EstadoViajeRequest, db: AsyncSession = Depends(get_db)):
+async def actualizar_estado_viaje(
+    d: EstadoViajeRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        await db.execute(text("UPDATE viajes SET estado=:st WHERE id=:vid"), {"st": d.nuevo_estado, "vid": d.viaje_id})
+        await db.execute(
+            text("UPDATE viajes SET estado=:st WHERE id=:vid"),
+            {"st": d.nuevo_estado, "vid": d.viaje_id},
+        )
         await db.commit()
         return {"mensaje": "Estado actualizado"}
-    except Exception as e: 
+    except Exception as e:
         await db.rollback()
         return {"error": str(e)}
+
 
 @app.post("/viajes/cancelar")
 async def cancelar_viaje(d: CancelarViajeRequest, db: AsyncSession = Depends(get_db)):
     try:
-        st = (await db.execute(text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id})).scalar()
-        if not st: return {"error": "Viaje no encontrado"}
-        if st == 'cancelado': return {"mensaje": "Ya cancelado"}
-        if st == 'finalizado': return {"error": "No se puede cancelar un viaje finalizado."}
+        st = (
+            await db.execute(
+                text("SELECT estado FROM viajes WHERE id=:vid"), {"vid": d.viaje_id}
+            )
+        ).scalar()
+        if not st:
+            return {"error": "Viaje no encontrado"}
+        if st == "cancelado":
+            return {"mensaje": "Ya cancelado"}
+        if st == "finalizado":
+            return {"error": "No se puede cancelar un viaje finalizado."}
 
-        await db.execute(text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"), {"vid": d.viaje_id})
+        await db.execute(
+            text("UPDATE viajes SET estado='cancelado' WHERE id=:vid"),
+            {"vid": d.viaje_id},
+        )
         await db.commit()
         return {"mensaje": "Viaje cancelado correctamente"}
-    except Exception as e: 
+    except Exception as e:
         await db.rollback()
         return {"error": f"Error interno: {str(e)}"}
+
 
 @app.get("/viajes/{viaje_id}")
 async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT v.estado, v.conductor_id, v.clave_seguridad, 
                    v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
                    c.nom_apell as nombre_conductor, ve.placa, ve.modelo, ve.color,
@@ -1731,7 +2284,8 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
             LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
             LEFT JOIN vehiculos ve ON c.vehiculo_id = ve.id
             WHERE v.id = :vid
-        """)
+        """
+        )
         v = (await db.execute(query, {"vid": viaje_id})).fetchone()
         if v:
             return {
@@ -1739,40 +2293,51 @@ async def obtener_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
                 "clave_seguridad": v.clave_seguridad,
                 "origen": {"lat": v.origen_lat, "lng": v.origen_lng},
                 "destino": {"lat": v.destino_lat, "lng": v.destino_lng},
-                "conductor": {
-                    "nombre": v.nombre_conductor,
-                    "placa": v.placa,
-                    "modelo": v.modelo,
-                    "color": v.color,
-                    "telefono": v.telefono,
-                    "lat": v.conductor_lat,
-                    "lng": v.conductor_lng
-                } if v.conductor_id else None
+                "conductor": (
+                    {
+                        "nombre": v.nombre_conductor,
+                        "placa": v.placa,
+                        "modelo": v.modelo,
+                        "color": v.color,
+                        "telefono": v.telefono,
+                        "lat": v.conductor_lat,
+                        "lng": v.conductor_lng,
+                    }
+                    if v.conductor_id
+                    else None
+                ),
             }
         return {"error": "No encontrado"}
-    except Exception as e: return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/public/viajes/{viaje_id}")
 async def public_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT v.estado,
                    ST_X(c.ubicacion::geometry) as conductor_lng,
                    ST_Y(c.ubicacion::geometry) as conductor_lat
             FROM viajes v
             LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
             WHERE v.id = :vid
-        """)
+        """
+        )
         v = (await db.execute(query, {"vid": viaje_id})).fetchone()
         if not v:
             return {"error": "No encontrado"}
         return {
             "estado": v.estado,
-            "conductor": {
-                "lat": v.conductor_lat,
-                "lng": v.conductor_lng,
-            } if v.conductor_lat is not None and v.conductor_lng is not None else None,
+            "conductor": (
+                {
+                    "lat": v.conductor_lat,
+                    "lng": v.conductor_lng,
+                }
+                if v.conductor_lat is not None and v.conductor_lng is not None
+                else None
+            ),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1780,7 +2345,8 @@ async def public_viaje(viaje_id: int, db: AsyncSession = Depends(get_db)):
 
 @app.get("/share/viaje/{viaje_id}", response_class=HTMLResponse)
 async def share_viaje(viaje_id: int):
-    return HTMLResponse(f"""
+    return HTMLResponse(
+        f"""
 <!doctype html>
 <html lang=\"es\">
 <head>
@@ -1832,30 +2398,56 @@ async def share_viaje(viaje_id: int):
   </script>
 </body>
 </html>
-""")
+"""
+    )
+
 
 @app.post("/contactos/agregar")
 async def agregar_contacto(d: ContactoRequest, db: AsyncSession = Depends(get_db)):
     try:
-        await db.execute(text("INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"), {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp})
+        await db.execute(
+            text(
+                "INSERT INTO emergencia (usuario_id, nombre_contacto, numero_whatsapp) VALUES (:uid, :nom, :num)"
+            ),
+            {"uid": d.usuario_id, "nom": d.nombre_contacto, "num": d.numero_whatsapp},
+        )
         await db.commit()
         return {"mensaje": "Guardado"}
-    except Exception as e: 
+    except Exception as e:
         await db.rollback()
         return {"error": str(e)}
 
+
 @app.get("/contactos/listar/{uid}")
 async def listar_contactos(uid: int, db: AsyncSession = Depends(get_db)):
-    res = await db.execute(text("SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"), {"uid": uid})
-    return [{"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp} for c in res.fetchall()]
+    res = await db.execute(
+        text(
+            "SELECT id, nombre_contacto, numero_whatsapp FROM emergencia WHERE usuario_id = :uid"
+        ),
+        {"uid": uid},
+    )
+    return [
+        {"id": c.id, "nombre": c.nombre_contacto, "numero": c.numero_whatsapp}
+        for c in res.fetchall()
+    ]
+
 
 @app.put("/contactos/editar/{cid}")
-async def editar_contacto(cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)):
+async def editar_contacto(
+    cid: int, datos: ContactoEditRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        await db.execute(text("UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"), {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid})
+        await db.execute(
+            text(
+                "UPDATE emergencia SET nombre_contacto=:nom, numero_whatsapp=:num WHERE id=:id"
+            ),
+            {"nom": datos.nombre_contacto, "num": datos.numero_whatsapp, "id": cid},
+        )
         await db.commit()
         return {"mensaje": "Actualizado"}
-    except: return {"error": "Error"}
+    except:
+        return {"error": "Error"}
+
 
 @app.delete("/contactos/eliminar/{cid}")
 async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
@@ -1863,23 +2455,40 @@ async def eliminar_contacto(cid: int, db: AsyncSession = Depends(get_db)):
         await db.execute(text("DELETE FROM emergencia WHERE id=:id"), {"id": cid})
         await db.commit()
         return {"mensaje": "Eliminado"}
-    except: return {"error": "Error"}
+    except:
+        return {"error": "Error"}
 
+
+# SEGURIDAD Y SOS
 @app.post("/sos/activar")
 async def activar_sos(d: AlertaRequest, db: AsyncSession = Depends(get_db)):
     try:
-        await db.execute(text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"), {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje})
+        await db.execute(
+            text(
+                "INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"
+            ),
+            {"uid": d.usuario_id, "ubi": d.ubicacion, "msg": d.mensaje},
+        )
         await db.commit()
         return {"mensaje": "Alerta registrada"}
-    except: return {"error": "Error"}
+    except:
+        return {"error": "Error"}
 
 
 @app.post("/sos/activar_conductor")
-async def activar_sos_conductor(d: SosConductorRequest, db: AsyncSession = Depends(get_db)):
+async def activar_sos_conductor(
+    d: SosConductorRequest, db: AsyncSession = Depends(get_db)
+):
     try:
         await db.execute(
-            text("INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"),
-            {"uid": d.usuario_id, "ubi": f"{d.lat},{d.lng}", "msg": d.mensaje or "SOS Conductor"},
+            text(
+                "INSERT INTO alertas (usuario_id, ubicacion, mensaje_extra) VALUES (:uid, :ubi, :msg)"
+            ),
+            {
+                "uid": d.usuario_id,
+                "ubi": f"{d.lat},{d.lng}",
+                "msg": d.mensaje or "SOS Conductor",
+            },
         )
         await db.commit()
     except Exception as e:
@@ -1887,12 +2496,14 @@ async def activar_sos_conductor(d: SosConductorRequest, db: AsyncSession = Depen
         return {"error": str(e)}
 
     res = await db.execute(
-        text("""
+        text(
+            """
             SELECT c.nom_apell, v.marca, v.modelo, v.placa, v.color
             FROM conductores c
             LEFT JOIN vehiculos v ON c.vehiculo_id = v.id
             WHERE c.usuario_id = :uid
-        """),
+        """
+        ),
         {"uid": d.usuario_id},
     )
     row = res.fetchone()
@@ -1915,6 +2526,7 @@ async def activar_sos_conductor(d: SosConductorRequest, db: AsyncSession = Depen
     await _broadcast_sos(payload)
     return {"mensaje": "Alerta SOS enviada"}
 
+
 @app.post("/sos/actualizar_conductor")
 async def actualizar_sos_conductor(d: SosConductorRequest):
     payload = {
@@ -1928,6 +2540,7 @@ async def actualizar_sos_conductor(d: SosConductorRequest):
     await _broadcast_sos(payload)
     return {"mensaje": "Actualizada"}
 
+
 @app.post("/sos/cerrar_conductor")
 async def cerrar_sos_conductor(d: SosConductorCloseRequest):
     payload = {
@@ -1937,26 +2550,47 @@ async def cerrar_sos_conductor(d: SosConductorCloseRequest):
     }
     await _broadcast_sos(payload)
     return {"mensaje": "SOS cerrado"}
+
+
 @app.post("/conductores/ubicacion")
-async def actualizar_ubicacion(datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)):
+async def actualizar_ubicacion(
+    datos: UbicacionConductorRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        await db.execute(text("UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud})
+        await db.execute(
+            text(
+                "UPDATE conductores SET ubicacion = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) WHERE usuario_id = :uid"
+            ),
+            {"uid": datos.usuario_id, "lat": datos.latitud, "lng": datos.longitud},
+        )
         await db.commit()
         return {"mensaje": "Ubicaciï¿½n OK"}
-    except: return {"error": "Error"}
+    except:
+        return {"error": "Error"}
+
 
 @app.post("/conductores/estado")
-async def cambiar_estado(datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)):
+async def cambiar_estado(
+    datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": datos.usuario_id, "st": datos.activo})
+        await db.execute(
+            text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"),
+            {"uid": datos.usuario_id, "st": datos.activo},
+        )
         await db.commit()
         return {"mensaje": "Estado OK"}
-    except: return {"error": "Error"}
+    except:
+        return {"error": "Error"}
+
 
 @app.get("/conductores/cercanos")
-async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)):
+async def obtener_conductores_cercanos(
+    lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)
+):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT c.id_conductor, c.nom_apell, v.placa, v.modelo,
                    ST_X(c.ubicacion::geometry) as lng, 
                    ST_Y(c.ubicacion::geometry) as lat
@@ -1965,15 +2599,31 @@ async def obtener_conductores_cercanos(lat: float, lng: float, radio_km: float =
             WHERE c.ubicacion IS NOT NULL
             AND c.activo = TRUE 
             AND ST_DWithin(c.ubicacion, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :metros)
-        """)
-        res = await db.execute(query, {"lat": lat, "lng": lng, "metros": radio_km * 1000})
-        return [{"id": c.id_conductor, "nombre": c.nom_apell, "placa": c.placa, "modelo": c.modelo, "lat": c.lat, "lng": c.lng} for c in res.fetchall()]
-    except: return []
+        """
+        )
+        res = await db.execute(
+            query, {"lat": lat, "lng": lng, "metros": radio_km * 1000}
+        )
+        return [
+            {
+                "id": c.id_conductor,
+                "nombre": c.nom_apell,
+                "placa": c.placa,
+                "modelo": c.modelo,
+                "lat": c.lat,
+                "lng": c.lng,
+            }
+            for c in res.fetchall()
+        ]
+    except:
+        return []
+
 
 @app.get("/conductores")
 async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id,
                    u.email, c.cedula, c.fecha_nacimiento,
                    c.foto_perfil, c.cedula_front, c.cedula_back,
@@ -1981,100 +2631,154 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
             FROM conductores c
             JOIN vehiculos v ON c.vehiculo_id = v.id
             JOIN usuarios u ON c.usuario_id = u.id
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{
-            "id": r.usuario_id,         
-            "id_conductor": r.id_conductor, 
-            "nom_apell": r.nom_apell, 
-            "nombre": r.nom_apell,      
-            "telefono": r.telefono, 
-            "activo": r.activo,
-            "placa": r.placa,
-            "email": r.email,
-            "cedula": r.cedula,
-            "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None,
-            "has_foto_perfil": (r.foto_perfil == "OK") or (r.foto_perfil_url is not None),
-            "has_cedula_front": (r.cedula_front == "OK") or (r.cedula_front_url is not None),
-            "has_cedula_back": (r.cedula_back == "OK") or (r.cedula_back_url is not None),
-        } for r in res.fetchall()]
-    except Exception as e: return []
+        return [
+            {
+                "id": r.usuario_id,
+                "id_conductor": r.id_conductor,
+                "nom_apell": r.nom_apell,
+                "nombre": r.nom_apell,
+                "telefono": r.telefono,
+                "activo": r.activo,
+                "placa": r.placa,
+                "email": r.email,
+                "cedula": r.cedula,
+                "fecha_nacimiento": (
+                    r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None
+                ),
+                "has_foto_perfil": (r.foto_perfil == "OK")
+                or (r.foto_perfil_url is not None),
+                "has_cedula_front": (r.cedula_front == "OK")
+                or (r.cedula_front_url is not None),
+                "has_cedula_back": (r.cedula_back == "OK")
+                or (r.cedula_back_url is not None),
+            }
+            for r in res.fetchall()
+        ]
+    except Exception as e:
+        return []
+
 
 @app.get("/usuarios")
 async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
     try:
-        query = text("""
+        query = text(
+            """
             SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
                    c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
                    c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
             FROM usuarios u
             LEFT JOIN clientes c ON u.id = c.usuario_id
             WHERE u.role = 'cliente'
-        """)
+        """
+        )
         res = await db.execute(query)
-        return [{
-            "id": r.id, 
-            "email": r.email, 
-            "nombre": r.nombre,
-            "telefono": r.telefono,
-            "has_cedula_front": (r.foto_cedulafrente == "OK") or (r.foto_cedulafrente_url is not None),
-            "has_cedula_back": (r.foto_cedulaposterior == "OK") or (r.foto_cedulaposterior_url is not None),
-            "has_selfie": (r.foto_selfieci == "OK") or (r.foto_selfieci_url is not None),
-            "has_pasaporte": (r.foto_pasaporte == "OK") or (r.foto_pasaporte_url is not None),
-        } for r in res.fetchall()]
+        return [
+            {
+                "id": r.id,
+                "email": r.email,
+                "nombre": r.nombre,
+                "telefono": r.telefono,
+                "has_cedula_front": (r.foto_cedulafrente == "OK")
+                or (r.foto_cedulafrente_url is not None),
+                "has_cedula_back": (r.foto_cedulaposterior == "OK")
+                or (r.foto_cedulaposterior_url is not None),
+                "has_selfie": (r.foto_selfieci == "OK")
+                or (r.foto_selfieci_url is not None),
+                "has_pasaporte": (r.foto_pasaporte == "OK")
+                or (r.foto_pasaporte_url is not None),
+            }
+            for r in res.fetchall()
+        ]
     except Exception as e:
         print(f"Error usuarios: {e}")
         return []
-    
+
+
 @app.get("/vehiculos")
 async def listar_vehiculos_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text("SELECT id, marca, modelo, placa, color, anio FROM vehiculos")
         res = await db.execute(query)
-        return [{
-            "id": r.id, 
-            "marca": r.marca, 
-            "modelo": r.modelo, 
-            "placa": r.placa, 
-            "color": r.color,
-            "anio": r.anio
-        } for r in res.fetchall()]
+        return [
+            {
+                "id": r.id,
+                "marca": r.marca,
+                "modelo": r.modelo,
+                "placa": r.placa,
+                "color": r.color,
+                "anio": r.anio,
+            }
+            for r in res.fetchall()
+        ]
     except Exception as e:
         print(f"Error vehiculos: {e}")
         return []
-    
+
+
 @app.put("/conductores/{id_conductor}")
-async def modificar_estado_conductor(id_conductor: int, datos: EstadoConductorPut, db: AsyncSession = Depends(get_db)):
-    uid = (await db.execute(text("SELECT usuario_id FROM conductores WHERE id_conductor=:id"), {"id": id_conductor})).scalar()
+async def modificar_estado_conductor(
+    id_conductor: int, datos: EstadoConductorPut, db: AsyncSession = Depends(get_db)
+):
+    uid = (
+        await db.execute(
+            text("SELECT usuario_id FROM conductores WHERE id_conductor=:id"),
+            {"id": id_conductor},
+        )
+    ).scalar()
     if uid:
-        await db.execute(text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"), {"uid": uid, "st": datos.activo})
+        await db.execute(
+            text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"),
+            {"uid": uid, "st": datos.activo},
+        )
         await db.commit()
         return {"mensaje": "Estado actualizado"}
     return {"error": "Conductor no encontrado"}
 
+
 @app.put("/admin/conductores/actualizar")
-async def admin_actualizar_conductor(d: AdminConductorUpdateRequest, db: AsyncSession = Depends(get_db)):
+async def admin_actualizar_conductor(
+    d: AdminConductorUpdateRequest, db: AsyncSession = Depends(get_db)
+):
     try:
-        user = (await db.execute(
-            text("SELECT id, email, role, supabase_uid FROM usuarios WHERE id = :uid"),
-            {"uid": d.usuario_id},
-        )).fetchone()
+        user = (
+            await db.execute(
+                text(
+                    "SELECT id, email, role, supabase_uid FROM usuarios WHERE id = :uid"
+                ),
+                {"uid": d.usuario_id},
+            )
+        ).fetchone()
         if not user:
-            return JSONResponse(status_code=404, content={"error": "Usuario no encontrado"})
+            return JSONResponse(
+                status_code=404, content={"error": "Usuario no encontrado"}
+            )
         if user.role != "conductor":
-            return JSONResponse(status_code=400, content={"error": "El usuario no es conductor"})
+            return JSONResponse(
+                status_code=400, content={"error": "El usuario no es conductor"}
+            )
 
         if d.email and d.email != user.email:
-            exists_email = (await db.execute(
-                text("SELECT 1 FROM usuarios WHERE email = :e AND id <> :uid"),
-                {"e": d.email, "uid": d.usuario_id},
-            )).scalar()
+            exists_email = (
+                await db.execute(
+                    text("SELECT 1 FROM usuarios WHERE email = :e AND id <> :uid"),
+                    {"e": d.email, "uid": d.usuario_id},
+                )
+            ).scalar()
             if exists_email:
-                return JSONResponse(status_code=400, content={"error": "El correo ya existe"})
+                return JSONResponse(
+                    status_code=400, content={"error": "El correo ya existe"}
+                )
             if user.supabase_uid:
-                supa_res = await _supabase_admin_update_user(user.supabase_uid, {"email": d.email})
+                supa_res = await _supabase_admin_update_user(
+                    user.supabase_uid, {"email": d.email}
+                )
                 if isinstance(supa_res, dict) and supa_res.get("error"):
-                    return JSONResponse(status_code=400, content={"error": supa_res["error"]})
+                    return JSONResponse(
+                        status_code=400, content={"error": supa_res["error"]}
+                    )
             await db.execute(
                 text("UPDATE usuarios SET email = :e WHERE id = :uid"),
                 {"e": d.email, "uid": d.usuario_id},
@@ -2082,28 +2786,45 @@ async def admin_actualizar_conductor(d: AdminConductorUpdateRequest, db: AsyncSe
 
         if d.password:
             if not user.supabase_uid:
-                return JSONResponse(status_code=400, content={"error": "No se pudo cambiar la clave (supabase_uid vacï¿½o)"})
-            supa_res = await _supabase_admin_update_user(user.supabase_uid, {"password": d.password})
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "No se pudo cambiar la clave (supabase_uid vacio)"
+                    },
+                )
+            supa_res = await _supabase_admin_update_user(
+                user.supabase_uid, {"password": d.password}
+            )
             if isinstance(supa_res, dict) and supa_res.get("error"):
-                return JSONResponse(status_code=400, content={"error": supa_res["error"]})
+                return JSONResponse(
+                    status_code=400, content={"error": supa_res["error"]}
+                )
             await db.execute(
-                text("UPDATE usuarios SET password_hash = :p, must_change_password = false WHERE id = :uid"),
+                text(
+                    "UPDATE usuarios SET password_hash = :p, must_change_password = false WHERE id = :uid"
+                ),
                 {"p": d.password, "uid": d.usuario_id},
             )
 
         vehiculo_id = None
         if d.vehiculo_placa:
-            vehiculo_id = (await db.execute(
-                text("SELECT id FROM vehiculos WHERE placa = :p"),
-                {"p": d.vehiculo_placa},
-            )).scalar()
+            vehiculo_id = (
+                await db.execute(
+                    text("SELECT id FROM vehiculos WHERE placa = :p"),
+                    {"p": d.vehiculo_placa},
+                )
+            ).scalar()
             if not vehiculo_id:
-                return JSONResponse(status_code=400, content={"error": "Vehï¿½culo no encontrado"})
+                return JSONResponse(
+                    status_code=400, content={"error": "Vehï¿½culo no encontrado"}
+                )
 
-        cond_exists = (await db.execute(
-            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
-            {"u": d.usuario_id},
-        )).scalar()
+        cond_exists = (
+            await db.execute(
+                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                {"u": d.usuario_id},
+            )
+        ).scalar()
 
         if not cond_exists:
             await db.execute(
@@ -2150,6 +2871,7 @@ async def admin_actualizar_conductor(d: AdminConductorUpdateRequest, db: AsyncSe
         await db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @app.post("/admin/conductores/fotos")
 async def admin_actualizar_fotos_conductor(
     usuario_id: int = Form(...),
@@ -2159,12 +2881,16 @@ async def admin_actualizar_fotos_conductor(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        exists_cond = (await db.execute(
-            text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
-            {"u": usuario_id},
-        )).scalar()
+        exists_cond = (
+            await db.execute(
+                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                {"u": usuario_id},
+            )
+        ).scalar()
         if not exists_cond:
-            return JSONResponse(status_code=404, content={"error": "Conductor no encontrado"})
+            return JSONResponse(
+                status_code=404, content={"error": "Conductor no encontrado"}
+            )
 
         ok_perfil = await _storage_upload(
             f"conductores/{usuario_id}/foto_perfil",
@@ -2195,7 +2921,9 @@ async def admin_actualizar_fotos_conductor(
             updates.append("cedula_back_url = NULL")
             await db.execute(
                 text(
-                    "UPDATE conductores SET " + ", ".join(updates) + " WHERE usuario_id = :uid"
+                    "UPDATE conductores SET "
+                    + ", ".join(updates)
+                    + " WHERE usuario_id = :uid"
                 ),
                 params,
             )
@@ -2217,41 +2945,55 @@ async def ws_sos(websocket: WebSocket):
         pass
     finally:
         _sos_connections.discard(websocket)
+
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
 
-@app.post('/usuarios/clear_password_flag')
+@app.post("/usuarios/clear_password_flag")
 async def clear_password_flag(d: dict, db: AsyncSession = Depends(get_db)):
     try:
-        uid = d.get('usuario_id')
+        uid = d.get("usuario_id")
         if not uid:
-            return dict(error='usuario_id requerido')
-        await db.execute(text('UPDATE usuarios SET must_change_password = false WHERE id = :uid'), dict(uid=uid))
+            return dict(error="usuario_id requerido")
+        await db.execute(
+            text("UPDATE usuarios SET must_change_password = false WHERE id = :uid"),
+            dict(uid=uid),
+        )
         await db.commit()
-        return dict(mensaje='OK')
+        return dict(mensaje="OK")
     except Exception as e:
         await db.rollback()
         return dict(error=str(e))
 
+
 @app.get("/usuarios/perfil/{usuario_id}")
 async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        user = (await db.execute(
-            text("SELECT id, email, role FROM usuarios WHERE id = :uid"),
-            {"uid": usuario_id},
-        )).fetchone()
+        user = (
+            await db.execute(
+                text("SELECT id, email, role FROM usuarios WHERE id = :uid"),
+                {"uid": usuario_id},
+            )
+        ).fetchone()
         if not user:
-            return JSONResponse(status_code=404, content={"error": "Usuario no encontrado"})
+            return JSONResponse(
+                status_code=404, content={"error": "Usuario no encontrado"}
+            )
 
         nombre = None
         foto_url = None
 
         if user.role == "cliente":
-            row = (await db.execute(
-                text("SELECT nom_apell, foto_selfieci, foto_selfieci_url FROM clientes WHERE usuario_id = :uid"),
-                {"uid": usuario_id},
-            )).fetchone()
+            row = (
+                await db.execute(
+                    text(
+                        "SELECT nom_apell, foto_selfieci, foto_selfieci_url FROM clientes WHERE usuario_id = :uid"
+                    ),
+                    {"uid": usuario_id},
+                )
+            ).fetchone()
             if row:
                 nombre = row.nom_apell
                 if row.foto_selfieci == "OK":
@@ -2259,29 +3001,44 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
                 elif row.foto_selfieci_url:
                     foto_url = row.foto_selfieci_url
         elif user.role == "conductor":
-            row = (await db.execute(
-                text("SELECT nom_apell, foto_perfil, foto_perfil_url FROM conductores WHERE usuario_id = :uid"),
-                {"uid": usuario_id},
-            )).fetchone()
+            row = (
+                await db.execute(
+                    text(
+                        "SELECT nom_apell, foto_perfil, foto_perfil_url FROM conductores WHERE usuario_id = :uid"
+                    ),
+                    {"uid": usuario_id},
+                )
+            ).fetchone()
             if row:
                 nombre = row.nom_apell
                 if row.foto_perfil == "OK":
-                    foto_url = _build_public_url(f"/conductores/{usuario_id}/foto_perfil")
+                    foto_url = _build_public_url(
+                        f"/conductores/{usuario_id}/foto_perfil"
+                    )
                 elif row.foto_perfil_url:
                     foto_url = row.foto_perfil_url
-
-        return {
-            "id": user.id,
-            "email": user.email,
-            "role": user.role,
-            "nombre": nombre or "Usuario",
-            "foto_url": foto_url,
-            "calificacion": 5.0,
-            "conteo": 0,
-        }
+                elif user.role == "propietario":
+                    row = (
+                        await db.execute(
+                            text(
+                                "SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"
+                            ),
+                            {"uid": usuario_id},
+                        )
+                    ).fetchone()
+                    if row:
+                        nombre = row.nom_apell
+                        foto_url = _build_public_url(
+                            f"/conductores/{usuario_id}/foto_perfil"
+                        )
+                        return {
+                            "id": user.id,
+                            "email": user.email,
+                            "role": user.role,
+                            "nombre": nombre or "Usuario",
+                            "foto_url": foto_url,
+                            "calificacion": 5.0,
+                            "conteo": 0,
+                        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-
-
