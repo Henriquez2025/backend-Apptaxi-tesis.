@@ -27,15 +27,6 @@ from fastapi import (
 from fastapi.responses import JSONResponse, HTMLResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 from pydantic import BaseModel
 from sqlalchemy import (
     Column,
@@ -624,18 +615,46 @@ class ConductorExtra(BaseModel):
 
 
 class RegistroFlotaCompletoRequest(BaseModel):
-    user_id: str
     owner_email: str
-    vehiculo_marca: str
-    vehiculo_placa: str
-    vehiculo_color: str
-    vehiculo_modelo: str
+    owner_cedula: str
     owner_nombre: str
     owner_apellido: str
-    owner_cedula: str
-    owner_fecha_nac: str
     owner_telefono: str
-    conductores_extra: str
+    owner_fecha_nac: str
+    vehiculo_marca: str
+    vehiculo_modelo: str
+    vehiculo_placa: str
+    vehiculo_color: str
+    conductores_extra: Optional[str] = None
+
+    @classmethod
+    def as_form(
+        cls,
+        owner_email: str = Form(...),
+        owner_cedula: str = Form(...),
+        owner_nombre: str = Form(...),
+        owner_apellido: str = Form(...),
+        owner_telefono: str = Form(...),
+        owner_fecha_nac: str = Form(...),
+        vehiculo_marca: str = Form(...),
+        vehiculo_modelo: str = Form(...),
+        vehiculo_placa: str = Form(...),
+        vehiculo_color: str = Form(...),
+        conductores_extra: str = Form(None),
+    ):
+        return cls(
+            owner_email=owner_email,
+            owner_cedula=owner_cedula,
+            owner_nombre=owner_nombre,
+            owner_apellido=owner_apellido,
+            owner_telefono=owner_telefono,
+            owner_fecha_nac=owner_fecha_nac,
+            vehiculo_marca=vehiculo_marca,
+            vehiculo_modelo=vehiculo_modelo,
+            vehiculo_placa=vehiculo_placa,
+            vehiculo_color=vehiculo_color,
+            conductores_extra=conductores_extra,
+        )
 
 
 class RegistroConductorRequest(BaseModel):
@@ -760,7 +779,12 @@ class AdminConductorUpdateRequest(BaseModel):
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "https://backend-apptaxi-tesis.onrender.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -845,6 +869,68 @@ def leer_raiz():
     Endpoint para verificar rápidamente si el servidor está respondiendo.
     """
     return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
+
+# ---------------------------------------------------------------------------
+# REPORTES (ADMIN)
+# ---------------------------------------------------------------------------
+
+@app.get("/reportes")
+async def reportes_general(db: AsyncSession = Depends(get_db)):
+    try:
+        viajes_q = text(
+            """
+            SELECT v.id, v.origen, v.destino, v.estado, v.tarifa, v.fecha_creacion,
+                   c.nom_apell as conductor_nombre,
+                   cli.nom_apell as cliente_nombre
+            FROM viajes v
+            LEFT JOIN conductores c ON v.conductor_id = c.usuario_id
+            LEFT JOIN clientes cli ON v.cliente_id = cli.usuario_id
+            ORDER BY v.fecha_creacion DESC
+            LIMIT 200
+        """
+        )
+        alertas_q = text(
+            """
+            SELECT a.id, a.ubicacion, a.mensaje_extra, a.fecha, u.role, u.email,
+                   COALESCE(c.nom_apell, cli.nom_apell, 'Usuario') as nombre
+            FROM alertas a
+            JOIN usuarios u ON a.usuario_id = u.id
+            LEFT JOIN conductores c ON a.usuario_id = c.usuario_id
+            LEFT JOIN clientes cli ON a.usuario_id = cli.usuario_id
+            ORDER BY a.fecha DESC
+            LIMIT 200
+        """
+        )
+        viajes_res = await db.execute(viajes_q)
+        alertas_res = await db.execute(alertas_q)
+        viajes = [
+            {
+                "id": r.id,
+                "origen": r.origen,
+                "destino": r.destino,
+                "estado": r.estado,
+                "tarifa": r.tarifa,
+                "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+                "conductor": r.conductor_nombre or "Conductor",
+                "pasajero": r.cliente_nombre or "Cliente",
+            }
+            for r in viajes_res.fetchall()
+        ]
+        alertas = [
+            {
+                "id": r.id,
+                "ubicacion": r.ubicacion,
+                "mensaje": r.mensaje_extra,
+                "fecha": r.fecha.isoformat() if r.fecha else None,
+                "rol": r.role,
+                "nombre": r.nombre or "Usuario",
+                "email": r.email,
+            }
+            for r in alertas_res.fetchall()
+        ]
+        return {"viajes": viajes, "alertas": alertas}
+    except Exception as e:
+        return {"viajes": [], "alertas": [], "error": str(e)}
 
 
 # REPORTES (ADMINISTRADOR)
@@ -996,7 +1082,19 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         if not user:
             return {"error": "Usuario no encontrado"}
         if not verificar_password(datos.password, user.password_hash):
-            return {"error": "Contraseña incorrecta"}
+            if user.password_hash == datos.password:
+                # Migración suave: si la clave estaba en texto plano, se cifra y se guarda
+                try:
+                    nuevo_hash = obtener_hash_password(datos.password)
+                    await db.execute(
+                        text("UPDATE usuarios SET password_hash = :p WHERE id = :uid"),
+                        {"p": nuevo_hash, "uid": user.id},
+                    )
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+            else:
+                return {"error": "Contraseña incorrecta"}
 
         # Obtener nombre real y determinar roles secundarios
         nombre_real = "Usuario"
@@ -1593,7 +1691,7 @@ async def registrar_usuario_fotos(
 # ENDPOINT: REGISTRO ADMINISTRATIVO (CONDUCTORES Y PROPIETARIOS)
 @app.post("/registrar_flota_completo")
 async def registrar_vehiculo_completo(
-    datos: RegistroFlotaCompletoRequest = Depends(),
+    datos: RegistroFlotaCompletoRequest = Depends(RegistroFlotaCompletoRequest.as_form),
     cedula_front: UploadFile = File(None),
     cedula_back: UploadFile = File(None),
     foto_perfil: UploadFile = File(None),
@@ -1603,6 +1701,19 @@ async def registrar_vehiculo_completo(
     try:
         if cedula_front:
             print(f"Archivo recibido: {cedula_front.filename}")
+        owner_email = (datos.owner_email or "").strip().lower()
+        if not owner_email:
+            return JSONResponse(status_code=400, content={"error": "Email requerido"})
+
+        owner_f_nac = None
+        if datos.owner_fecha_nac:
+            try:
+                owner_f_nac = datetime.strptime(
+                    datos.owner_fecha_nac, "%Y-%m-%d"
+                ).date()
+            except Exception:
+                owner_f_nac = None
+
         # Crea o actualiza el Vehículo
         vehiculo_id = (
             await db.execute(
@@ -1628,18 +1739,36 @@ async def registrar_vehiculo_completo(
             ).scalar()
 
         # Verifica/Crea Usuario para el Dueño
-        user_id = (
+        user_row = (
             await db.execute(
-                text("SELECT id FROM usuarios WHERE email = :e"),
-                {"e": datos.owner_email},
+                text("SELECT id, role FROM usuarios WHERE email = :e"),
+                {"e": owner_email},
             )
-        ).scalar()
+        ).fetchone()
 
-        if not user_id:
+        supa_user = None
+        if user_row:
+            if (user_row.role or "").lower() != "propietario":
+                return JSONResponse(
+                    status_code=400, content={"error": "Email ya existe con otro rol"}
+                )
+            user_id = user_row.id
+        else:
             # Crea en Supabase Auth y luego en tabla local
             supa_res = await _supabase_admin_create_user(
-                datos.owner_email, datos.owner_cedula, "propietario"
+                owner_email, datos.owner_cedula, "propietario"
             )
+            if isinstance(supa_res, dict) and supa_res.get("error"):
+                err_msg = str(supa_res.get("error"))
+                if _is_supabase_user_exists_error(err_msg):
+                    supa_user = await _supabase_admin_get_user_by_email(owner_email)
+                else:
+                    return JSONResponse(
+                        status_code=400, content={"error": supa_res["error"]}
+                    )
+            else:
+                supa_user = supa_res
+
             user_id = (
                 await db.execute(
                     text(
@@ -1647,11 +1776,20 @@ async def registrar_vehiculo_completo(
                         VALUES (:e, :p, 'propietario', true) RETURNING id"""
                     ),
                     {
-                        "e": datos.owner_email,
+                        "e": owner_email,
                         "p": obtener_hash_password(datos.owner_cedula),
                     },
                 )
             ).scalar()
+
+            try:
+                if isinstance(supa_user, dict) and supa_user.get("id"):
+                    await db.execute(
+                        text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
+                        {"suid": supa_user.get("id"), "uid": user_id},
+                    )
+            except Exception:
+                pass
 
         # Crea Perfil de Propietario
         exists_prop = (
@@ -1671,16 +1809,186 @@ async def registrar_vehiculo_completo(
                     "n": f"{datos.owner_nombre} {datos.owner_apellido}",
                     "c": datos.owner_cedula,
                     "t": datos.owner_telefono,
-                    "f": datos.owner_fecha_nac,
+                    "f": owner_f_nac,
                 },
             )
 
+        # Crea Conductor para el dueño si no existe
+        exists_owner_cond = (
+            await db.execute(
+                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                {"u": user_id},
+            )
+        ).scalar()
+        if not exists_owner_cond:
+            await db.execute(
+                text(
+                    """INSERT INTO conductores (usuario_id, nom_apell, telefono, fecha_nacimiento, cedula, activo, vehiculo_id)
+                    VALUES (:uid, :nom, :tel, :fn, :ced, true, :vid)"""
+                ),
+                {
+                    "uid": user_id,
+                    "nom": f"{datos.owner_nombre} {datos.owner_apellido}",
+                    "tel": datos.owner_telefono,
+                    "fn": owner_f_nac,
+                    "ced": datos.owner_cedula,
+                    "vid": vehiculo_id,
+                },
+            )
+
+        # Subir fotos del vehículo y del dueño (si vienen)
+        ok_auto = await _storage_upload(
+            f"vehiculos/{vehiculo_id}/foto_vehiculo",
+            foto_vehiculo,
+        )
+        if ok_auto:
+            try:
+                await db.execute(
+                    text(
+                        "UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = NULL WHERE id = :vid"
+                    ),
+                    {"fv": "OK", "vid": vehiculo_id},
+                )
+            except Exception:
+                pass
+
+        ok_front = await _storage_upload(
+            f"conductores/{user_id}/cedula_front",
+            cedula_front,
+        )
+        ok_back = await _storage_upload(
+            f"conductores/{user_id}/cedula_back",
+            cedula_back,
+        )
+        ok_perfil = await _storage_upload(
+            f"conductores/{user_id}/foto_perfil",
+            foto_perfil,
+        )
+        updates = []
+        params = {"uid": user_id}
+        if ok_front:
+            updates.append("cedula_front = :cf")
+            updates.append("cedula_front_url = NULL")
+            params["cf"] = "OK"
+        if ok_back:
+            updates.append("cedula_back = :cb")
+            updates.append("cedula_back_url = NULL")
+            params["cb"] = "OK"
+        if ok_perfil:
+            updates.append("foto_perfil = :fp")
+            updates.append("foto_perfil_url = NULL")
+            params["fp"] = "OK"
+        if updates:
+            try:
+                await db.execute(
+                    text(
+                        "UPDATE conductores SET "
+                        + ", ".join(updates)
+                        + " WHERE usuario_id = :uid"
+                    ),
+                    params,
+                )
+            except Exception:
+                pass
+
         # Procesa Conductores Extra
         if datos.conductores_extra:
-            extras = json.loads(datos.conductores_extra)
-            for c in extras:
-                # Crea usuario para cada conductor adicional si no existe
-                pass
+            try:
+                extras = json.loads(datos.conductores_extra)
+            except Exception:
+                extras = []
+            if isinstance(extras, list):
+                for c in extras:
+                    try:
+                        extra_cedula = c.get("cedula") or ""
+                        extra_email = (c.get("email") or f"{extra_cedula}@chofer.com").strip().lower()
+                        extra_nombre = f"{c.get('nombre', '').strip()} {c.get('apellido', '').strip()}".strip()
+                        extra_tel = c.get("telefono") or ""
+                        extra_fecha = c.get("fecha_nacimiento")
+                        extra_f_nac = None
+                        if extra_fecha:
+                            try:
+                                extra_f_nac = datetime.strptime(extra_fecha, "%Y-%m-%d").date()
+                            except Exception:
+                                extra_f_nac = None
+
+                        row = (
+                            await db.execute(
+                                text("SELECT id, role FROM usuarios WHERE email = :e"),
+                                {"e": extra_email},
+                            )
+                        ).fetchone()
+
+                        supa_extra = None
+                        if row:
+                            if (row.role or "").lower() != "conductor":
+                                return JSONResponse(
+                                    status_code=400,
+                                    content={"error": f"Email ya existe con otro rol: {extra_email}"},
+                                )
+                            extra_uid = row.id
+                        else:
+                            supa_res = await _supabase_admin_create_user(
+                                extra_email, extra_cedula, "conductor"
+                            )
+                            if isinstance(supa_res, dict) and supa_res.get("error"):
+                                err_msg = str(supa_res.get("error"))
+                                if _is_supabase_user_exists_error(err_msg):
+                                    supa_extra = await _supabase_admin_get_user_by_email(extra_email)
+                                else:
+                                    return JSONResponse(
+                                        status_code=400, content={"error": supa_res["error"]}
+                                    )
+                            else:
+                                supa_extra = supa_res
+
+                            extra_uid = (
+                                await db.execute(
+                                    text(
+                                        """INSERT INTO usuarios (email, password_hash, role, must_change_password)
+                                        VALUES (:e, :p, 'conductor', true) RETURNING id"""
+                                    ),
+                                    {
+                                        "e": extra_email,
+                                        "p": obtener_hash_password(extra_cedula),
+                                    },
+                                )
+                            ).scalar()
+
+                            try:
+                                if isinstance(supa_extra, dict) and supa_extra.get("id"):
+                                    await db.execute(
+                                        text(
+                                            "UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"
+                                        ),
+                                        {"suid": supa_extra.get("id"), "uid": extra_uid},
+                                    )
+                            except Exception:
+                                pass
+
+                        exists_extra_cond = (
+                            await db.execute(
+                                text("SELECT 1 FROM conductores WHERE usuario_id = :u"),
+                                {"u": extra_uid},
+                            )
+                        ).scalar()
+                        if not exists_extra_cond:
+                            await db.execute(
+                                text(
+                                    """INSERT INTO conductores (usuario_id, nom_apell, telefono, fecha_nacimiento, cedula, activo, vehiculo_id)
+                                    VALUES (:uid, :nom, :tel, :fn, :ced, true, :vid)"""
+                                ),
+                                {
+                                    "uid": extra_uid,
+                                    "nom": extra_nombre or "Conductor",
+                                    "tel": extra_tel,
+                                    "fn": extra_f_nac,
+                                    "ced": extra_cedula,
+                                    "vid": vehiculo_id,
+                                },
+                            )
+                    except Exception:
+                        continue
 
         await db.commit()
         return {"ok": True, "mensaje": "Flota registrada exitosamente"}
@@ -1920,8 +2228,9 @@ async def registrar_conductor_existente(
             """
             )
             try:
+                pwd_hash = obtener_hash_password(cedula)
                 res_u = await db.execute(
-                    q_user, {"email": email_final, "pwd": cedula, "role": role_db}
+                    q_user, {"email": email_final, "pwd": pwd_hash, "role": role_db}
                 )
                 new_user_id = res_u.scalar()
             except IntegrityError:
