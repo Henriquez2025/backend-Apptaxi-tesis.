@@ -2019,11 +2019,13 @@ async def obtener_vehiculo_por_placa(placa: str, db: AsyncSession = Depends(get_
     try:
         query = text(
             """
-            SELECT v.id, v.marca, v.modelo, v.color, p.nom_apell 
+            SELECT v.id, v.marca, v.modelo, v.color,
+                   COALESCE(p.nom_apell, c.nom_apell) as nom_apell
             FROM vehiculos v 
-            JOIN conductores c ON c.vehiculo_id = v.id 
-            JOIN propietarios p ON p.usuario_id = c.usuario_id
+            LEFT JOIN conductores c ON c.vehiculo_id = v.id 
+            LEFT JOIN propietarios p ON p.usuario_id = c.usuario_id
             WHERE v.placa = :placa 
+            ORDER BY (p.nom_apell IS NOT NULL) DESC, c.id_conductor ASC
             LIMIT 1
         """
         )
@@ -3056,11 +3058,12 @@ async def admin_actualizar_conductor(
                 return JSONResponse(
                     status_code=400, content={"error": supa_res["error"]}
                 )
+            password_segura = obtener_hash_password(d.password)
             await db.execute(
                 text(
                     "UPDATE usuarios SET password_hash = :p, must_change_password = false WHERE id = :uid"
                 ),
-                {"p": d.password, "uid": d.usuario_id},
+                {"p": password_segura, "uid": d.usuario_id},
             )
 
         vehiculo_id = None
@@ -3282,28 +3285,38 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
                     )
                 elif row.foto_perfil_url:
                     foto_url = row.foto_perfil_url
-                elif user.role == "propietario":
-                    row = (
-                        await db.execute(
-                            text(
-                                "SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"
-                            ),
-                            {"uid": usuario_id},
-                        )
-                    ).fetchone()
-                    if row:
-                        nombre = row.nom_apell
-                        foto_url = _build_public_url(
-                            f"/conductores/{usuario_id}/foto_perfil"
-                        )
-                        return {
-                            "id": user.id,
-                            "email": user.email,
-                            "role": user.role,
-                            "nombre": nombre or "Usuario",
-                            "foto_url": foto_url,
-                            "calificacion": 5.0,
-                            "conteo": 0,
-                        }
+        elif user.role == "propietario":
+            row = (
+                await db.execute(
+                    text(
+                        "SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"
+                    ),
+                    {"uid": usuario_id},
+                )
+            ).fetchone()
+            if row:
+                nombre = row.nom_apell
+                foto_url = _build_public_url(f"/conductores/{usuario_id}/foto_perfil")
+        elif user.role == "admin":
+            row = (
+                await db.execute(
+                    text(
+                        "SELECT nom_apell FROM administradores WHERE usuario_id = :uid"
+                    ),
+                    {"uid": usuario_id},
+                )
+            ).fetchone()
+            if row:
+                nombre = row.nom_apell
+
+        return {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "nombre": nombre or "Usuario",
+            "foto_url": foto_url,
+            "calificacion": 5.0,
+            "conteo": 0,
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
