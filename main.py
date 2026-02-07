@@ -779,9 +779,8 @@ class AdminConductorUpdateRequest(BaseModel):
 app = FastAPI(title="Taxi App API", description="API REST")
 app.add_middleware(
     CORSMiddleware,
-    # Permite Flutter Web en localhost (cualquier puerto) y el dominio de Render
-    allow_origins=["https://backend-apptaxi-tesis.onrender.com"],
-    allow_origin_regex=r"^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?$",
+    # Permite cualquier origen (para evitar bloqueo CORS en Flutter Web)
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
