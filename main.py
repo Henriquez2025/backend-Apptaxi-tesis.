@@ -3,6 +3,7 @@ import urllib.parse
 import random
 import json
 import base64
+import hashlib
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 from passlib.context import CryptContext
@@ -109,16 +110,27 @@ PALABRAS_CLAVE = [
 # SEGURIDAD
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+def _normalize_password(password: str) -> str:
+    """
+    Bcrypt solo acepta hasta 72 bytes. Si excede, usamos SHA-256 y
+    pasamos el hex resultante (determinístico) al hash bcrypt.
+    """
+    if password is None:
+        return ""
+    raw = password.encode("utf-8")
+    if len(raw) <= 72:
+        return password
+    return hashlib.sha256(raw).hexdigest()
 
 def obtener_hash_password(password: str) -> str:
     return pwd_context.hash(
-        password
+        _normalize_password(password)
     )  # Cifra la contraseña antes de guardarla en Render
 
 
 def verificar_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(
-        plain_password, hashed_password
+        _normalize_password(plain_password), hashed_password
     )  # Compara una contraseña escrita con la cifrada en la base de datos
 
 
