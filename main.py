@@ -1581,7 +1581,7 @@ async def registrar_usuario_fotos(
 
 
 # ENDPOINT: REGISTRO ADMINISTRATIVO (CONDUCTORES Y PROPIETARIOS)
-@app.post("/registrar_vehiculo_completo")
+@app.post("/registrar_flota_completo")
 async def registrar_vehiculo_completo(
     datos: RegistroFlotaCompletoRequest, db: AsyncSession = Depends(get_db)
 ):
@@ -2973,3 +2973,4 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
                         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
