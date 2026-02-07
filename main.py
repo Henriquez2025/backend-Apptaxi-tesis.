@@ -6,6 +6,11 @@ import base64
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 from passlib.context import CryptContext
+from dotenv import load_dotenv
+from pathlib import Path
+
+env_path = Path(".") / ".env"
+load_dotenv()
 
 import uvicorn
 import httpx
@@ -40,38 +45,21 @@ from sqlalchemy.sql import func
 from sqladmin import Admin, ModelView
 from geoalchemy2 import Geometry
 
-# CONFIGURACION DE BASE DE DATOS
-PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID") or os.getenv("PROJECT_ID")
-SUPABASE_USER = os.getenv("SUPABASE_DB_USER") or os.getenv("DB_USER")
-SUPABASE_HOST = (
-    os.getenv("SUPABASE_DB_HOST")
-    or os.getenv("DB_HOST")
-    or "aws-1-sa-east-1.pooler.supabase.com"
-)
-SUPABASE_PORT = os.getenv("SUPABASE_DB_PORT") or os.getenv("DB_PORT") or "6543"
-SUPABASE_DB = os.getenv("SUPABASE_DB_NAME") or os.getenv("DB_NAME") or "postgres"
-DB_PASSWORD = os.getenv("SUPABASE_DB_PASSWORD") or os.getenv("DB_PASSWORD")
-
-if not SUPABASE_USER and PROJECT_ID:
-    SUPABASE_USER = f"postgres.{PROJECT_ID}"
-
+# CONFIGURACIÓN DE BASE DE DATOS Y SUPABASE
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE")
 DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL:
-    if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif DATABASE_URL.startswith("postgresql://"):
-        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-else:
-    if not SUPABASE_USER or not DB_PASSWORD:
-        raise RuntimeError(
-            "Falta configuraciï¿½n de base de datos (DATABASE_URL o SUPABASE_DB_USER/DB_USER y SUPABASE_DB_PASSWORD/DB_PASSWORD)."
-        )
-    encoded_pass = urllib.parse.quote_plus(DB_PASSWORD)
-    DATABASE_URL = (
-        f"postgresql+asyncpg://{SUPABASE_USER}:{encoded_pass}"
-        f"@{SUPABASE_HOST}:{SUPABASE_PORT}/{SUPABASE_DB}"
-        "?ssl=require&prepared_statement_cache_size=0"
+
+# Validación simple de seguridad
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE or not DATABASE_URL:
+    raise RuntimeError(
+        "Faltan variables de entorno (Revisa el .env en local o el Dashboard en Render)"
     )
+
+# Variables para compatibilidad
+PROJECT_ID = "manual"
+SUPABASE_USER = "manual"
+DB_PASSWORD = "manual"
 
 # CONEXIÓN ASÍNCRONA CON LA BASE DE DATOS
 engine = None
