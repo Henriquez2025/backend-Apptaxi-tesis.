@@ -3207,12 +3207,13 @@ async def ws_sos(websocket: WebSocket):
         _sos_connections.discard(websocket)
 
 
-# visualizar errores
+# visualizar errores (solo rutas con métodos HTTP)
 @app.on_event("startup")
 async def debug_rutas():
     print("🚀 RUTAS REGISTRADAS EN EL SERVIDOR:")
     for route in app.routes:
-        print(f"URL: {route.path} | Métodos: {route.methods}")
+        if hasattr(route, "methods"):
+            print(f"URL: {route.path} | Métodos: {route.methods}")
 
 
 if __name__ == "__main__":
