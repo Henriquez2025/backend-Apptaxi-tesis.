@@ -465,6 +465,7 @@ class Usuario(Base):
         Boolean, default=False
     )  # Para usuarios creados por Admin
     supabase_uid = Column(String, nullable=True)  # ID único de la nube de Supabase
+    activo = Column(Boolean, default=True)
 
     # Relaciones con las demás tablas de perfiles
     perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
@@ -1119,7 +1120,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         # Buscar usuario por email
         res = await db.execute(
             text(
-                "SELECT id, email, password_hash, role, must_change_password FROM usuarios WHERE email = :email"
+                "SELECT id, email, password_hash, role, must_change_password, activo FROM usuarios WHERE email = :email"
             ),
             {"email": datos.email},
         )
@@ -3619,3 +3620,4 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
