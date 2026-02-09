@@ -492,7 +492,9 @@ class Cliente(Base):
     fecha_nacimiento = Column(Date)
     usuario = relationship("Usuario", back_populates="perfil_cliente")
 
-
+class UpdateEstadoUsuario(BaseModel):
+    activo: bool
+    
 # Datos técnicos de los vehículos registrados en la flota
 class Vehiculo(Base):
     __tablename__ = "vehiculos"
@@ -3033,7 +3035,20 @@ async def cambiar_estado(
     except:
         return {"error": "Error"}
 
-
+@app.post("/conductores/estado")
+async def cambiar_estado(
+    datos: EstadoConductorRequest, db: AsyncSession = Depends(get_db)
+):
+    try:
+        await db.execute(
+            text("UPDATE conductores SET activo = :st WHERE usuario_id = :uid"),
+            {"uid": datos.usuario_id, "st": datos.activo},
+        )
+        await db.commit()
+        return {"mensaje": "Estado OK"}
+    except:
+        return {"error": "Error"}
+        
 @app.get("/conductores/cercanos")
 async def obtener_conductores_cercanos(
     lat: float, lng: float, radio_km: float = 2.0, db: AsyncSession = Depends(get_db)
@@ -3620,4 +3635,5 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
