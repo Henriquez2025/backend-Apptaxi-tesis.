@@ -1131,6 +1131,8 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         # Validaciones básicas
         if not user:
             return {"error": "Usuario no encontrado"}
+        if user.activo is False: 
+           raise HTTPException(status_code=400, detail="Usuario BLOQUEADO. Contacte soporte.")
         if not verificar_password(datos.password, user.password_hash):
             if user.password_hash == datos.password:
                 # Migración suave: si la clave estaba en texto plano, se cifra y se guarda
@@ -3635,5 +3637,6 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
