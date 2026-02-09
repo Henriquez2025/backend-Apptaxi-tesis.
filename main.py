@@ -3338,6 +3338,8 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
 
         nombre = None
         foto_url = None
+        conductores_asociados = []
+        sos_asociados = []
 
         if user.role == "cliente":
             row = (
@@ -3383,6 +3385,42 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
             if row:
                 nombre = row.nom_apell
                 foto_url = _build_public_url(f"/conductores/{usuario_id}/foto_perfil")
+            #para obtener vehiculo  
+            vehiculos = await db.execute(
+                text("SELECT id, placa FROM vehiculos WHERE propietario_id = :uid"),
+                {"uid": usuario_id},
+            )
+            vehiculos = vehiculos.fetchall()
+            vehiculo_ids = [v.id for v in vehiculos]
+            #para obtenr sus conductores
+            if vehiculo_ids:
+                res = await db.execute(
+                    text("""
+                        SELECT c.usuario_id, c.nom_apell, v.placa
+                        FROM conductores c
+                        JOIN vehiculos v ON c.vehiculo_id = v.id
+                        WHERE v.id = ANY(:veh_ids)
+                    """),
+                    {"veh_ids": vehiculo_ids},
+                )
+                conductores_asociados = [
+                    {"usuario_id": c.usuario_id, "nombre": c.nom_apell, "placa": c.placa}
+                    for c in res.fetchall()
+                ]
+                #obtener sos de sus condutores
+                res_sos = await db.execute(
+                        text("""
+                            SELECT a.usuario_id, a.ubicacion, a.mensaje_extra, a.fecha_creacion
+                            FROM alertas a
+                            WHERE a.usuario_id = ANY(:conductor_ids)
+                            AND a.estado = 'activo'
+                        """),
+                        {"conductor_ids": [c["usuario_id"] for c in conductores_asociados]},
+                    )
+                    sos_asociados = [
+                        {"usuario_id": s.usuario_id, "ubicacion": s.ubicacion, "mensaje": s.mensaje_extra, "ts": s.fecha_creacion}
+                        for s in res_sos.fetchall()
+                    ]
         elif user.role == "admin":
             row = (
                 await db.execute(
@@ -3406,3 +3444,4 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
