@@ -2987,7 +2987,7 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
                 "placa": r.placa,
                 "marca": r.marca,   
                 "modelo": r.modelo,
-                "owner_id": r.propietario_id,
+                "owner_id": r.owner_id,
                 "email": r.email,
                 "cedula": r.cedula,
                 "fecha_nacimiento": (
@@ -3450,6 +3450,7 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 
