@@ -1146,6 +1146,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         # Obtener nombre real y determinar roles secundarios
         nombre_real = "Usuario"
         es_conductor_tambien = False
+        es_cliente_tambien = False
         try:
             if user.role == "cliente":
                 res_cli = (
@@ -1192,8 +1193,51 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
                 if check_cond:
                     es_conductor_tambien = True
 
+            # Verificamos si también existe perfil de cliente
+            exists_cli = (
+                await db.execute(
+                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                    {"u": user.id},
+                )
+            ).scalar()
+            if exists_cli:
+                es_cliente_tambien = True
+            elif user.role == "propietario":
+                # Auto-crea perfil cliente para habilitar modo pasajero
+                try:
+                    prop = (
+                        await db.execute(
+                            text(
+                                "SELECT nom_apell, telefono, fecha_nacimiento FROM propietarios WHERE usuario_id = :uid"
+                            ),
+                            {"uid": user.id},
+                        )
+                    ).fetchone()
+                    if prop:
+                        await db.execute(
+                            text(
+                                "INSERT INTO clientes (usuario_id, nom_apell, telefono, fecha_nacimiento) "
+                                "VALUES (:u, :n, :t, :f)"
+                            ),
+                            {
+                                "u": user.id,
+                                "n": prop.nom_apell,
+                                "t": prop.telefono,
+                                "f": prop.fecha_nacimiento,
+                            },
+                        )
+                        await db.commit()
+                        es_cliente_tambien = True
+                except Exception:
+                    await db.rollback()
+
         except Exception:
             pass
+        lista_roles = [user.role]
+        if es_conductor_tambien and user.role != "conductor":
+            lista_roles.append("conductor")
+        if es_cliente_tambien and user.role != "cliente":
+            lista_roles.append("cliente")
         # Respuesta final al Frontend
         return {
             "mensaje": "Login OK",
@@ -1202,6 +1246,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
                 "nombre": nombre_real,
                 "role": user.role,
                 "es_conductor": es_conductor_tambien,
+                "roles_disponibles": lista_roles,
                 "must_change_password": bool(user.must_change_password),
             },
         }
@@ -1386,6 +1431,7 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         # Obtiene nombre real y roles
         nombre_real = "Usuario"
         es_conductor_tambien = False
+        es_cliente_tambien = False
         try:
             # ES CLIENTE
             if user.role == "cliente":
@@ -1445,12 +1491,52 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
                 if res_admin:
                     nombre_real = res_admin.nom_apell
 
+            # Verificamos si también existe perfil de cliente
+            exists_cli = (
+                await db.execute(
+                    text("SELECT 1 FROM clientes WHERE usuario_id = :u"),
+                    {"u": user.id},
+                )
+            ).scalar()
+            if exists_cli:
+                es_cliente_tambien = True
+            elif user.role == "propietario":
+                # Auto-crea perfil cliente para habilitar modo pasajero
+                try:
+                    prop = (
+                        await db.execute(
+                            text(
+                                "SELECT nom_apell, telefono, fecha_nacimiento FROM propietarios WHERE usuario_id = :uid"
+                            ),
+                            {"uid": user.id},
+                        )
+                    ).fetchone()
+                    if prop:
+                        await db.execute(
+                            text(
+                                "INSERT INTO clientes (usuario_id, nom_apell, telefono, fecha_nacimiento) "
+                                "VALUES (:u, :n, :t, :f)"
+                            ),
+                            {
+                                "u": user.id,
+                                "n": prop.nom_apell,
+                                "t": prop.telefono,
+                                "f": prop.fecha_nacimiento,
+                            },
+                        )
+                        await db.commit()
+                        es_cliente_tambien = True
+                except Exception:
+                    await db.rollback()
+
         except Exception:
             pass
 
         lista_roles = [user.role]
         if es_conductor_tambien and user.role != "conductor":
             lista_roles.append("conductor")
+        if es_cliente_tambien and user.role != "cliente":
+            lista_roles.append("cliente")
 
         # Respuesta Final (JSON)
         return {
