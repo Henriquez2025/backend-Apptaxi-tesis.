@@ -2963,7 +2963,9 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
     try:
         query = text(
             """
-            SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, v.placa, u.id as usuario_id,
+            SELECT c.id_conductor, c.nom_apell, c.telefono, c.activo, 
+                   v.placa, v.marca, v.modelo, v.propietario_id,
+                   u.id as usuario_id,
                    u.email, c.cedula, c.fecha_nacimiento,
                    c.foto_perfil, c.cedula_front, c.cedula_back,
                    c.foto_perfil_url, c.cedula_front_url, c.cedula_back_url
@@ -2982,6 +2984,9 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
                 "telefono": r.telefono,
                 "activo": r.activo,
                 "placa": r.placa,
+                "marca": r.marca,   
+                "modelo": r.modelo,
+                "owner_id": r.propietario_id,
                 "email": r.email,
                 "cedula": r.cedula,
                 "fecha_nacimiento": (
@@ -3444,4 +3449,5 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
