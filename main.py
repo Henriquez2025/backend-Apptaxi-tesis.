@@ -3422,11 +3422,11 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
                             AND a.estado = 'activo'
                         """),
                         {"conductor_ids": [c["usuario_id"] for c in conductores_asociados]},
-                    )
-                    sos_asociados = [
-                        {"usuario_id": s.usuario_id, "ubicacion": s.ubicacion, "mensaje": s.mensaje_extra, "ts": s.fecha_creacion}
-                        for s in res_sos.fetchall()
-                    ]
+                )
+                sos_asociados = [
+                    {"usuario_id": s.usuario_id, "ubicacion": s.ubicacion, "mensaje": s.mensaje_extra, "ts": s.fecha_creacion}
+                    for s in res_sos.fetchall()
+                ]
         elif user.role == "admin":
             row = (
                 await db.execute(
@@ -3450,6 +3450,7 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 
