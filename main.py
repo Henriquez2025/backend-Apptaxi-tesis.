@@ -110,6 +110,7 @@ PALABRAS_CLAVE = [
 # SEGURIDAD
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+
 def _normalize_password(password: str) -> str:
     """
     Bcrypt solo acepta hasta 72 bytes. Si excede, usamos SHA-256 y
@@ -121,6 +122,7 @@ def _normalize_password(password: str) -> str:
     if len(raw) <= 72:
         return password
     return hashlib.sha256(raw).hexdigest()
+
 
 def obtener_hash_password(password: str) -> str:
     return pwd_context.hash(
@@ -913,9 +915,11 @@ def leer_raiz():
     """
     return {"mensaje": "API Taxi Running (v29.0 - Con Registro Flota)."}
 
+
 # ---------------------------------------------------------------------------
 # REPORTES (ADMIN)
 # ---------------------------------------------------------------------------
+
 
 @app.get("/reportes")
 async def reportes_general(db: AsyncSession = Depends(get_db)):
@@ -1865,7 +1869,9 @@ async def registrar_vehiculo_completo(
             try:
                 if isinstance(supa_user, dict) and supa_user.get("id"):
                     await db.execute(
-                        text("UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"),
+                        text(
+                            "UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"
+                        ),
                         {"suid": supa_user.get("id"), "uid": user_id},
                     )
             except Exception:
@@ -1981,14 +1987,20 @@ async def registrar_vehiculo_completo(
                 for c in extras:
                     try:
                         extra_cedula = c.get("cedula") or ""
-                        extra_email = (c.get("email") or f"{extra_cedula}@chofer.com").strip().lower()
+                        extra_email = (
+                            (c.get("email") or f"{extra_cedula}@chofer.com")
+                            .strip()
+                            .lower()
+                        )
                         extra_nombre = f"{c.get('nombre', '').strip()} {c.get('apellido', '').strip()}".strip()
                         extra_tel = c.get("telefono") or ""
                         extra_fecha = c.get("fecha_nacimiento")
                         extra_f_nac = None
                         if extra_fecha:
                             try:
-                                extra_f_nac = datetime.strptime(extra_fecha, "%Y-%m-%d").date()
+                                extra_f_nac = datetime.strptime(
+                                    extra_fecha, "%Y-%m-%d"
+                                ).date()
                             except Exception:
                                 extra_f_nac = None
 
@@ -2004,7 +2016,9 @@ async def registrar_vehiculo_completo(
                             if (row.role or "").lower() != "conductor":
                                 return JSONResponse(
                                     status_code=400,
-                                    content={"error": f"Email ya existe con otro rol: {extra_email}"},
+                                    content={
+                                        "error": f"Email ya existe con otro rol: {extra_email}"
+                                    },
                                 )
                             extra_uid = row.id
                         else:
@@ -2014,10 +2028,15 @@ async def registrar_vehiculo_completo(
                             if isinstance(supa_res, dict) and supa_res.get("error"):
                                 err_msg = str(supa_res.get("error"))
                                 if _is_supabase_user_exists_error(err_msg):
-                                    supa_extra = await _supabase_admin_get_user_by_email(extra_email)
+                                    supa_extra = (
+                                        await _supabase_admin_get_user_by_email(
+                                            extra_email
+                                        )
+                                    )
                                 else:
                                     return JSONResponse(
-                                        status_code=400, content={"error": supa_res["error"]}
+                                        status_code=400,
+                                        content={"error": supa_res["error"]},
                                     )
                             else:
                                 supa_extra = supa_res
@@ -2036,12 +2055,17 @@ async def registrar_vehiculo_completo(
                             ).scalar()
 
                             try:
-                                if isinstance(supa_extra, dict) and supa_extra.get("id"):
+                                if isinstance(supa_extra, dict) and supa_extra.get(
+                                    "id"
+                                ):
                                     await db.execute(
                                         text(
                                             "UPDATE usuarios SET supabase_uid = :suid WHERE id = :uid"
                                         ),
-                                        {"suid": supa_extra.get("id"), "uid": extra_uid},
+                                        {
+                                            "suid": supa_extra.get("id"),
+                                            "uid": extra_uid,
+                                        },
                                     )
                             except Exception:
                                 pass
@@ -3002,6 +3026,109 @@ async def listar_conductores_todos(db: AsyncSession = Depends(get_db)):
         return []
 
 
+@app.get("/propietarios/{usuario_id}/panel")
+async def propietario_panel(usuario_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        owner = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id, usuario_id, nom_apell, telefono, cedula, fecha_nacimiento
+                    FROM propietarios
+                    WHERE usuario_id = :uid
+                    """
+                ),
+                {"uid": usuario_id},
+            )
+        ).fetchone()
+
+        vehiculo = (
+            await db.execute(
+                text(
+                    """
+                    SELECT v.id, v.marca, v.modelo, v.placa, v.color, v.anio,
+                           v.foto_vehiculo, v.foto_vehiculo_url
+                    FROM vehiculos v
+                    JOIN conductores c ON c.vehiculo_id = v.id
+                    WHERE c.usuario_id = :uid
+                    ORDER BY v.id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"uid": usuario_id},
+            )
+        ).fetchone()
+
+        conductores = []
+        if vehiculo:
+            res = await db.execute(
+                text(
+                    """
+                    SELECT c.id_conductor, c.usuario_id, c.nom_apell, c.telefono,
+                           c.activo, c.cedula, c.fecha_nacimiento, u.email
+                    FROM conductores c
+                    JOIN usuarios u ON u.id = c.usuario_id
+                    WHERE c.vehiculo_id = :vid
+                    ORDER BY c.id_conductor ASC
+                    """
+                ),
+                {"vid": vehiculo.id},
+            )
+            conductores = [
+                {
+                    "id_conductor": r.id_conductor,
+                    "usuario_id": r.usuario_id,
+                    "nom_apell": r.nom_apell,
+                    "telefono": r.telefono,
+                    "activo": r.activo,
+                    "cedula": r.cedula,
+                    "fecha_nacimiento": (
+                        r.fecha_nacimiento.isoformat()
+                        if r.fecha_nacimiento
+                        else None
+                    ),
+                    "email": r.email,
+                }
+                for r in res.fetchall()
+            ]
+
+        return {
+            "owner": (
+                {
+                    "id": owner.id,
+                    "usuario_id": owner.usuario_id,
+                    "nom_apell": owner.nom_apell,
+                    "telefono": owner.telefono,
+                    "cedula": owner.cedula,
+                    "fecha_nacimiento": (
+                        owner.fecha_nacimiento.isoformat()
+                        if owner.fecha_nacimiento
+                        else None
+                    ),
+                }
+                if owner
+                else None
+            ),
+            "vehiculo": (
+                {
+                    "id": vehiculo.id,
+                    "marca": vehiculo.marca,
+                    "modelo": vehiculo.modelo,
+                    "placa": vehiculo.placa,
+                    "color": vehiculo.color,
+                    "anio": vehiculo.anio,
+                    "foto_vehiculo": vehiculo.foto_vehiculo,
+                    "foto_vehiculo_url": vehiculo.foto_vehiculo_url,
+                }
+                if vehiculo
+                else None
+            ),
+            "conductores": conductores,
+        }
+    except Exception as e:
+        return {"owner": None, "vehiculo": None, "conductores": [], "error": str(e)}
+
+
 @app.get("/usuarios")
 async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
     try:
@@ -3376,9 +3503,7 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         elif user.role == "propietario":
             row = (
                 await db.execute(
-                    text(
-                        "SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"
-                    ),
+                    text("SELECT nom_apell FROM propietarios WHERE usuario_id = :uid"),
                     {"uid": usuario_id},
                 )
             ).fetchone()
@@ -3408,9 +3533,3 @@ async def obtener_perfil(usuario_id: int, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-
-
-
-
