@@ -3433,31 +3433,49 @@ async def propietario_panel(usuario_id: int, db: AsyncSession = Depends(get_db))
 @app.get("/usuarios")
 async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
     try:
-        query = text(
+        rows = []
+        try:
+            query = text(
+                """
+                SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                       u.activo, u.suspension_until, u.suspension_reason,
+                       c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                       c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
+                FROM usuarios u
+                LEFT JOIN clientes c ON u.id = c.usuario_id
+                WHERE u.role = 'cliente'
             """
-            SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
-                   u.activo, u.suspension_until, u.suspension_reason,
-                   c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
-                   c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
-            FROM usuarios u
-            LEFT JOIN clientes c ON u.id = c.usuario_id
-            WHERE u.role = 'cliente'
-        """
-        )
-        res = await db.execute(query)
+            )
+            res = await db.execute(query)
+            rows = res.fetchall()
+        except Exception:
+            # Fallback por si la BD aún no tiene columnas nuevas
+            query_legacy = text(
+                """
+                SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                       c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                       c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
+                FROM usuarios u
+                LEFT JOIN clientes c ON u.id = c.usuario_id
+                WHERE u.role = 'cliente'
+            """
+            )
+            res = await db.execute(query_legacy)
+            rows = res.fetchall()
+
         return [
             {
                 "id": r.id,
                 "email": r.email,
                 "nombre": r.nombre,
                 "telefono": r.telefono,
-                "activo": r.activo,
+                "activo": getattr(r, "activo", True),
                 "suspension_until": (
-                    r.suspension_until.isoformat()
-                    if r.suspension_until
+                    getattr(r, "suspension_until", None).isoformat()
+                    if getattr(r, "suspension_until", None)
                     else None
                 ),
-                "suspension_reason": r.suspension_reason,
+                "suspension_reason": getattr(r, "suspension_reason", None),
                 "has_cedula_front": (r.foto_cedulafrente == "OK")
                 or (r.foto_cedulafrente_url is not None),
                 "has_cedula_back": (r.foto_cedulaposterior == "OK")
@@ -3467,7 +3485,7 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
                 "has_pasaporte": (r.foto_pasaporte == "OK")
                 or (r.foto_pasaporte_url is not None),
             }
-            for r in res.fetchall()
+            for r in rows
         ]
     except Exception as e:
         print(f"Error usuarios: {e}")
