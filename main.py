@@ -3437,31 +3437,44 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
         try:
             query = text(
                 """
-                SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
-                       u.activo, u.suspension_until, u.suspension_reason,
-                       c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
-                       c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
-                FROM usuarios u
-                LEFT JOIN clientes c ON u.id = c.usuario_id
-                WHERE u.role = 'cliente'
+            SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                   u.activo, u.suspension_until, u.suspension_reason,
+                   c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                   c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
+            FROM usuarios u
+            LEFT JOIN clientes c ON u.id = c.usuario_id
+            WHERE LOWER(u.role) = 'cliente' OR c.usuario_id IS NOT NULL
             """
             )
             res = await db.execute(query)
             rows = res.fetchall()
         except Exception:
             # Fallback por si la BD aún no tiene columnas nuevas
-            query_legacy = text(
+            try:
+                query_legacy = text(
+                    """
+                    SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                           c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                           c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
+                    FROM usuarios u
+                    LEFT JOIN clientes c ON u.id = c.usuario_id
+                    WHERE LOWER(u.role) = 'cliente' OR c.usuario_id IS NOT NULL
                 """
-                SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
-                       c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
-                       c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
-                FROM usuarios u
-                LEFT JOIN clientes c ON u.id = c.usuario_id
-                WHERE u.role = 'cliente'
-            """
-            )
-            res = await db.execute(query_legacy)
-            rows = res.fetchall()
+                )
+                res = await db.execute(query_legacy)
+                rows = res.fetchall()
+            except Exception:
+                # Fallback mínimo si faltan columnas de fotos
+                query_min = text(
+                    """
+                    SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono
+                    FROM usuarios u
+                    LEFT JOIN clientes c ON u.id = c.usuario_id
+                    WHERE LOWER(u.role) = 'cliente' OR c.usuario_id IS NOT NULL
+                """
+                )
+                res = await db.execute(query_min)
+                rows = res.fetchall()
 
         return [
             {
@@ -3476,14 +3489,22 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
                     else None
                 ),
                 "suspension_reason": getattr(r, "suspension_reason", None),
-                "has_cedula_front": (r.foto_cedulafrente == "OK")
-                or (r.foto_cedulafrente_url is not None),
-                "has_cedula_back": (r.foto_cedulaposterior == "OK")
-                or (r.foto_cedulaposterior_url is not None),
-                "has_selfie": (r.foto_selfieci == "OK")
-                or (r.foto_selfieci_url is not None),
-                "has_pasaporte": (r.foto_pasaporte == "OK")
-                or (r.foto_pasaporte_url is not None),
+                "has_cedula_front": (
+                    getattr(r, "foto_cedulafrente", None) == "OK"
+                    or getattr(r, "foto_cedulafrente_url", None) is not None
+                ),
+                "has_cedula_back": (
+                    getattr(r, "foto_cedulaposterior", None) == "OK"
+                    or getattr(r, "foto_cedulaposterior_url", None) is not None
+                ),
+                "has_selfie": (
+                    getattr(r, "foto_selfieci", None) == "OK"
+                    or getattr(r, "foto_selfieci_url", None) is not None
+                ),
+                "has_pasaporte": (
+                    getattr(r, "foto_pasaporte", None) == "OK"
+                    or getattr(r, "foto_pasaporte_url", None) is not None
+                ),
             }
             for r in rows
         ]
