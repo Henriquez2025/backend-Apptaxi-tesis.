@@ -4,7 +4,7 @@ import random
 import json
 import base64
 import hashlib
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List
 from passlib.context import CryptContext
 from dotenv import load_dotenv
@@ -83,6 +83,72 @@ except Exception as e:
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 Base = declarative_base()
+
+# MIGRACIÓN LIGERA: asegura columnas para suspensión/bloqueo en usuarios
+async def _ensure_usuario_columns():
+    if not engine:
+        return
+    try:
+        async with async_session() as db:
+            await db.execute(
+                text(
+                    "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS suspension_until TIMESTAMPTZ"
+                )
+            )
+            await db.execute(
+                text(
+                    "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS suspension_reason TEXT"
+                )
+            )
+            await db.commit()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+
+async def _check_usuario_restriccion(db: AsyncSession, user_row):
+    """
+    Valida bloqueo/suspensión. Si la suspensión expiró, la limpia.
+    Retorna mensaje de error si debe bloquear el acceso.
+    """
+    if not user_row:
+        return None
+
+    if user_row.activo is False:
+        motivo = (user_row.suspension_reason or "").strip()
+        if motivo:
+            return f"Cuenta bloqueada. Motivo: {motivo}"
+        return "Cuenta bloqueada. Contacte soporte."
+
+    until = getattr(user_row, "suspension_until", None)
+    if until:
+        now = datetime.now(timezone.utc)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        if until > now:
+            motivo = (user_row.suspension_reason or "").strip()
+            if motivo:
+                return (
+                    f"Cuenta suspendida hasta {until.isoformat()}. Motivo: {motivo}"
+                )
+            return f"Cuenta suspendida hasta {until.isoformat()}."
+        # Si la suspensión ya expiró, limpiamos
+        try:
+            await db.execute(
+                text(
+                    "UPDATE usuarios SET suspension_until = NULL, suspension_reason = NULL WHERE id = :uid"
+                ),
+                {"uid": user_row.id},
+            )
+            await db.commit()
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    return None
 
 # SEGURIDAD
 PALABRAS_CLAVE = [
@@ -466,6 +532,8 @@ class Usuario(Base):
     )  # Para usuarios creados por Admin
     supabase_uid = Column(String, nullable=True)  # ID único de la nube de Supabase
     activo = Column(Boolean, default=True)
+    suspension_until = Column(DateTime(timezone=True), nullable=True)
+    suspension_reason = Column(String, nullable=True)
     # Relaciones con las demás tablas de perfiles
     perfil_cliente = relationship("Cliente", back_populates="usuario", uselist=False)
     perfil_conductor = relationship(
@@ -493,7 +561,9 @@ class Cliente(Base):
 
 
 class UpdateEstadoUsuario(BaseModel):
-    activo: bool
+    activo: Optional[bool] = None
+    suspension_until: Optional[datetime] = None
+    suspension_reason: Optional[str] = None
 
 
 # Datos técnicos de los vehículos registrados en la flota
@@ -1123,7 +1193,7 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         # Buscar usuario por email
         res = await db.execute(
             text(
-                "SELECT id, email, password_hash, role, must_change_password, activo FROM usuarios WHERE email = :email"
+                "SELECT id, email, password_hash, role, must_change_password, activo, suspension_until, suspension_reason FROM usuarios WHERE email = :email"
             ),
             {"email": datos.email},
         )
@@ -1132,10 +1202,9 @@ async def login(datos: LoginRequest, db: AsyncSession = Depends(get_db)):
         # Validaciones básicas
         if not user:
             return {"error": "Usuario no encontrado"}
-        if user.activo is False:
-            raise HTTPException(
-                status_code=400, detail="Usuario BLOQUEADO. Contacte soporte."
-            )
+        bloqueo_msg = await _check_usuario_restriccion(db, user)
+        if bloqueo_msg:
+            return {"error": bloqueo_msg, "blocked": True}
         if not verificar_password(datos.password, user.password_hash):
             if user.password_hash == datos.password:
                 # Migración suave: si la clave estaba en texto plano, se cifra y se guarda
@@ -1354,7 +1423,7 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
         # Busca usuario en Base de Datos Local
         res = await db.execute(
             text(
-                "SELECT id, email, role, must_change_password FROM usuarios WHERE email = :email"
+                "SELECT id, email, role, must_change_password, activo, suspension_until, suspension_reason FROM usuarios WHERE email = :email"
             ),
             {"email": datos.email},
         )
@@ -1362,6 +1431,9 @@ async def auth_sync(datos: AuthSyncRequest, db: AsyncSession = Depends(get_db)):
 
         if not user:
             return {"error": "Usuario no encontrado en backend"}
+        bloqueo_msg = await _check_usuario_restriccion(db, user)
+        if bloqueo_msg:
+            return {"error": bloqueo_msg, "blocked": True}
         # Sincroniza datos del perfil CLIENTE si aplica
         if user.role == "cliente":
             try:
@@ -3364,6 +3436,7 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
         query = text(
             """
             SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                   u.activo, u.suspension_until, u.suspension_reason,
                    c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
                    c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
             FROM usuarios u
@@ -3378,6 +3451,13 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
                 "email": r.email,
                 "nombre": r.nombre,
                 "telefono": r.telefono,
+                "activo": r.activo,
+                "suspension_until": (
+                    r.suspension_until.isoformat()
+                    if r.suspension_until
+                    else None
+                ),
+                "suspension_reason": r.suspension_reason,
                 "has_cedula_front": (r.foto_cedulafrente == "OK")
                 or (r.foto_cedulafrente_url is not None),
                 "has_cedula_back": (r.foto_cedulaposterior == "OK")
@@ -3461,9 +3541,32 @@ async def cambiar_estado_usuario(
         if not usuario_existe:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+        if hasattr(data, "model_dump"):
+            payload = data.model_dump(exclude_unset=True)
+        else:
+            payload = data.dict(exclude_unset=True)
+
+        if not payload:
+            return {"ok": False, "error": "Sin datos para actualizar"}
+
+        updates = []
+        params = {"uid": usuario_id}
+        if "activo" in payload:
+            updates.append("activo = :act")
+            params["act"] = payload.get("activo")
+        if "suspension_until" in payload:
+            updates.append("suspension_until = :su")
+            params["su"] = payload.get("suspension_until")
+        if "suspension_reason" in payload:
+            updates.append("suspension_reason = :sr")
+            params["sr"] = payload.get("suspension_reason")
+
+        if not updates:
+            return {"ok": False, "error": "Sin campos válidos"}
+
         await db.execute(
-            text("UPDATE usuarios SET activo = :act WHERE id = :uid"),
-            {"act": data.activo, "uid": usuario_id},
+            text("UPDATE usuarios SET " + ", ".join(updates) + " WHERE id = :uid"),
+            params,
         )
         await db.commit()
 
@@ -3731,6 +3834,11 @@ async def debug_rutas():
     for route in app.routes:
         if hasattr(route, "methods"):
             print(f"URL: {route.path} | Métodos: {route.methods}")
+
+
+@app.on_event("startup")
+async def ensure_usuario_columns_on_startup():
+    await _ensure_usuario_columns()
 
 
 @app.on_event("startup")
