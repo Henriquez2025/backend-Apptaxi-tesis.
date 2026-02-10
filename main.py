@@ -3476,6 +3476,45 @@ async def listar_usuarios_todos(db: AsyncSession = Depends(get_db)):
                 res = await db.execute(query_min)
                 rows = res.fetchall()
 
+        # Si no hay clientes, devolvemos todos los usuarios como fallback
+        if not rows:
+            try:
+                query_all = text(
+                    """
+                    SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                           u.activo, u.suspension_until, u.suspension_reason,
+                           c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                           c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
+                    FROM usuarios u
+                    LEFT JOIN clientes c ON u.id = c.usuario_id
+                    """
+                )
+                res = await db.execute(query_all)
+                rows = res.fetchall()
+            except Exception:
+                try:
+                    query_all_legacy = text(
+                        """
+                        SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono,
+                               c.foto_cedulafrente, c.foto_cedulaposterior, c.foto_selfieci, c.foto_pasaporte,
+                               c.foto_cedulafrente_url, c.foto_cedulaposterior_url, c.foto_selfieci_url, c.foto_pasaporte_url
+                        FROM usuarios u
+                        LEFT JOIN clientes c ON u.id = c.usuario_id
+                    """
+                    )
+                    res = await db.execute(query_all_legacy)
+                    rows = res.fetchall()
+                except Exception:
+                    query_all_min = text(
+                        """
+                        SELECT u.id, u.email, COALESCE(c.nom_apell, 'Sin Nombre') as nombre, c.telefono
+                        FROM usuarios u
+                        LEFT JOIN clientes c ON u.id = c.usuario_id
+                    """
+                    )
+                    res = await db.execute(query_all_min)
+                    rows = res.fetchall()
+
         return [
             {
                 "id": r.id,
