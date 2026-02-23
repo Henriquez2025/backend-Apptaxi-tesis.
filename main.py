@@ -408,6 +408,7 @@ def _guess_mime(data: bytes) -> str:
 # CONFIGURACIÓN DE ALMACENAMIENTO (SUPABASE STORAGE)
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET") or "taxi-media"
 _STORAGE_READY = False
+MOCK_MEDIA_URL = (os.getenv("MOCK_MEDIA_URL") or "").strip() or None
 
 
 async def _ensure_storage_bucket():
@@ -455,6 +456,8 @@ async def _storage_upload(path: str, file: Optional[UploadFile]) -> bool:
     """
     if not file:
         return False
+    if MOCK_MEDIA_URL:
+        return True
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE:
         return False
     await _ensure_storage_bucket()
@@ -1861,27 +1864,44 @@ async def registrar_usuario_fotos(
             foto_pasaporte,
         )
 
+        mock_url = MOCK_MEDIA_URL
         updates = []
         params = {"uid": existing_id}
         if ok_frente:
             updates.append("foto_cedulafrente = :ff")
-            updates.append("foto_cedulafrente_url = NULL")
             params["ff"] = "OK"
+            if mock_url:
+                updates.append("foto_cedulafrente_url = :ffu")
+                params["ffu"] = mock_url
+            else:
+                updates.append("foto_cedulafrente_url = NULL")
 
         if ok_posterior:
             updates.append("foto_cedulaposterior = :fa")
-            updates.append("foto_cedulaposterior_url = NULL")
             params["fa"] = "OK"
+            if mock_url:
+                updates.append("foto_cedulaposterior_url = :fau")
+                params["fau"] = mock_url
+            else:
+                updates.append("foto_cedulaposterior_url = NULL")
 
         if ok_selfie:
             updates.append("foto_selfieci = :fs")
-            updates.append("foto_selfieci_url = NULL")
             params["fs"] = "OK"
+            if mock_url:
+                updates.append("foto_selfieci_url = :fsu")
+                params["fsu"] = mock_url
+            else:
+                updates.append("foto_selfieci_url = NULL")
 
         if ok_pasaporte:
             updates.append("foto_pasaporte = :fp")
-            updates.append("foto_pasaporte_url = NULL")
             params["fp"] = "OK"
+            if mock_url:
+                updates.append("foto_pasaporte_url = :fpu")
+                params["fpu"] = mock_url
+            else:
+                updates.append("foto_pasaporte_url = NULL")
 
         if updates:
             await db.execute(
@@ -2094,12 +2114,20 @@ async def registrar_vehiculo_completo(
         )
         if ok_auto:
             try:
-                await db.execute(
-                    text(
-                        "UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = NULL WHERE id = :vid"
-                    ),
-                    {"fv": "OK", "vid": vehiculo_id},
-                )
+                if MOCK_MEDIA_URL:
+                    await db.execute(
+                        text(
+                            "UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = :fvu WHERE id = :vid"
+                        ),
+                        {"fv": "OK", "fvu": MOCK_MEDIA_URL, "vid": vehiculo_id},
+                    )
+                else:
+                    await db.execute(
+                        text(
+                            "UPDATE vehiculos SET foto_vehiculo = :fv, foto_vehiculo_url = NULL WHERE id = :vid"
+                        ),
+                        {"fv": "OK", "vid": vehiculo_id},
+                    )
             except Exception:
                 pass
 
@@ -2115,20 +2143,33 @@ async def registrar_vehiculo_completo(
             f"conductores/{user_id}/foto_perfil",
             foto_perfil,
         )
+        mock_url = MOCK_MEDIA_URL
         updates = []
         params = {"uid": user_id}
         if ok_front:
             updates.append("cedula_front = :cf")
-            updates.append("cedula_front_url = NULL")
             params["cf"] = "OK"
+            if mock_url:
+                updates.append("cedula_front_url = :cfu")
+                params["cfu"] = mock_url
+            else:
+                updates.append("cedula_front_url = NULL")
         if ok_back:
             updates.append("cedula_back = :cb")
-            updates.append("cedula_back_url = NULL")
             params["cb"] = "OK"
+            if mock_url:
+                updates.append("cedula_back_url = :cbu")
+                params["cbu"] = mock_url
+            else:
+                updates.append("cedula_back_url = NULL")
         if ok_perfil:
             updates.append("foto_perfil = :fp")
-            updates.append("foto_perfil_url = NULL")
             params["fp"] = "OK"
+            if mock_url:
+                updates.append("foto_perfil_url = :fpu")
+                params["fpu"] = mock_url
+            else:
+                updates.append("foto_perfil_url = NULL")
         if updates:
             try:
                 await db.execute(
@@ -2592,21 +2633,32 @@ async def registrar_conductor_existente(
             foto_perfil,
         )
 
+        mock_url = MOCK_MEDIA_URL
         updates = []
         params = {"uid": new_user_id}
         if ok_front:
             updates.append("cedula_front = :cf")
             params["cf"] = "OK"
+            if mock_url:
+                updates.append("cedula_front_url = :cfu")
+                params["cfu"] = mock_url
         if ok_back:
             updates.append("cedula_back = :cb")
             params["cb"] = "OK"
+            if mock_url:
+                updates.append("cedula_back_url = :cbu")
+                params["cbu"] = mock_url
         if ok_perfil:
             updates.append("foto_perfil = :fp")
             params["fp"] = "OK"
+            if mock_url:
+                updates.append("foto_perfil_url = :fpu")
+                params["fpu"] = mock_url
         if updates:
-            updates.append("cedula_front_url = NULL")
-            updates.append("cedula_back_url = NULL")
-            updates.append("foto_perfil_url = NULL")
+            if not mock_url:
+                updates.append("cedula_front_url = NULL")
+                updates.append("cedula_back_url = NULL")
+                updates.append("foto_perfil_url = NULL")
             await db.execute(
                 text(
                     "UPDATE conductores SET "
@@ -3862,21 +3914,32 @@ async def admin_actualizar_fotos_conductor(
             f"conductores/{usuario_id}/cedula_back",
             cedula_back,
         )
+        mock_url = MOCK_MEDIA_URL
         updates = []
         params = {"uid": usuario_id}
         if ok_perfil:
             updates.append("foto_perfil = :fp")
             params["fp"] = "OK"
+            if mock_url:
+                updates.append("foto_perfil_url = :fpu")
+                params["fpu"] = mock_url
         if ok_front:
             updates.append("cedula_front = :cf")
             params["cf"] = "OK"
+            if mock_url:
+                updates.append("cedula_front_url = :cfu")
+                params["cfu"] = mock_url
         if ok_back:
             updates.append("cedula_back = :cb")
             params["cb"] = "OK"
+            if mock_url:
+                updates.append("cedula_back_url = :cbu")
+                params["cbu"] = mock_url
         if updates:
-            updates.append("foto_perfil_url = NULL")
-            updates.append("cedula_front_url = NULL")
-            updates.append("cedula_back_url = NULL")
+            if not mock_url:
+                updates.append("foto_perfil_url = NULL")
+                updates.append("cedula_front_url = NULL")
+                updates.append("cedula_back_url = NULL")
             await db.execute(
                 text(
                     "UPDATE conductores SET "
@@ -3953,12 +4016,20 @@ async def actualizar_foto_usuario(
                 return JSONResponse(
                     status_code=500, content={"error": "No se pudo subir foto"}
                 )
-            await db.execute(
-                text(
-                    "UPDATE clientes SET foto_selfieci = :fs, foto_selfieci_url = NULL WHERE usuario_id = :uid"
-                ),
-                {"fs": "OK", "uid": usuario_id},
-            )
+            if MOCK_MEDIA_URL:
+                await db.execute(
+                    text(
+                        "UPDATE clientes SET foto_selfieci = :fs, foto_selfieci_url = :fsu WHERE usuario_id = :uid"
+                    ),
+                    {"fs": "OK", "fsu": MOCK_MEDIA_URL, "uid": usuario_id},
+                )
+            else:
+                await db.execute(
+                    text(
+                        "UPDATE clientes SET foto_selfieci = :fs, foto_selfieci_url = NULL WHERE usuario_id = :uid"
+                    ),
+                    {"fs": "OK", "uid": usuario_id},
+                )
         else:
             ok = await _storage_upload(
                 f"conductores/{usuario_id}/foto_perfil", foto
@@ -3967,12 +4038,20 @@ async def actualizar_foto_usuario(
                 return JSONResponse(
                     status_code=500, content={"error": "No se pudo subir foto"}
                 )
-            await db.execute(
-                text(
-                    "UPDATE conductores SET foto_perfil = :fp, foto_perfil_url = NULL WHERE usuario_id = :uid"
-                ),
-                {"fp": "OK", "uid": usuario_id},
-            )
+            if MOCK_MEDIA_URL:
+                await db.execute(
+                    text(
+                        "UPDATE conductores SET foto_perfil = :fp, foto_perfil_url = :fpu WHERE usuario_id = :uid"
+                    ),
+                    {"fp": "OK", "fpu": MOCK_MEDIA_URL, "uid": usuario_id},
+                )
+            else:
+                await db.execute(
+                    text(
+                        "UPDATE conductores SET foto_perfil = :fp, foto_perfil_url = NULL WHERE usuario_id = :uid"
+                    ),
+                    {"fp": "OK", "uid": usuario_id},
+                )
 
         await db.commit()
         return {"ok": True}
